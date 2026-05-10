@@ -2,14 +2,7 @@
   "name": "MLOps-FireGuard (Python 3.11)",
   "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
 
-  "features": {
-    "ghcr.io/devcontainers/features/git:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "version": "latest",
-      "moby": true
-    }
-  },
+  "features": {},
 
   "customizations": {
     "vscode": {
@@ -61,7 +54,7 @@
 
   "remoteEnv": {
     "PYTHONPATH": "${containerWorkspaceFolder}:${containerWorkspaceFolder}/src",
-    "MLFLOW_TRACKING_URI": "file:///workspaces/MLOps-FireGuard/mlruns"
+    "MLFLOW_TRACKING_URI": "file://${containerWorkspaceFolder}/mlruns"
   },
 
   "containerEnv": {
