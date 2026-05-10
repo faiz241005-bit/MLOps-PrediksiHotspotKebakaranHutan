@@ -1,0 +1,123 @@
+# =============================================================================
+# FireGuard MLOps — .gitignore
+# =============================================================================
+# Mencegah kebocoran kredensial, data besar, dan artifact yang seharusnya
+# tidak masuk ke version control.
+# =============================================================================
+
+# --- Secrets & credentials (CRITICAL — jangan pernah dihapus) ----------------
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.p12
+credentials.json
+service-account*.json
+
+# NASA FIRMS API key — biasanya disimpan di env atau secrets
+firms_api_key.txt
+*.token
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual environments ----------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Testing & coverage ------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --- Notebooks ---------------------------------------------------------------
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# --- IDE / Editor ------------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- DVC ---------------------------------------------------------------------
+# DVC tracks data lewat .dvc files; data binary tidak boleh masuk Git.
+/data/raw/*
+/data/processed/*
+/data/features/*
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/data/features/.gitkeep
+!/data/**/*.dvc
+
+# DVC cache (lokal, tidak perlu commit)
+.dvc/cache
+.dvc/tmp
+.dvc/plots
+
+# --- Models ------------------------------------------------------------------
+/models/*
+!/models/.gitkeep
+!/models/**/*.dvc
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# --- MLflow ------------------------------------------------------------------
+mlruns/
+mlartifacts/
+mlflow.db
+
+# --- Logs --------------------------------------------------------------------
+logs/
+*.log
+*.log.*
+
+# --- Docker ------------------------------------------------------------------
+*.dockerignore.bak
+
+# --- OS ----------------------------------------------------------------------
+.AppleDouble
+.LSOverride
+$RECYCLE.BIN/
+ehthumbs.db

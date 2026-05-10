@@ -1,0 +1,24 @@
+# =============================================================================
+# FireGuard — Path Conventions (TEMPLATE)
+# =============================================================================
+# Copy ke paths.yaml. Semua path RELATIF terhadap root repo agar portable.
+# =============================================================================
+
+data:
+  raw: "data/raw"
+  processed: "data/processed"
+  features: "data/features"
+
+models:
+  registry: "models"
+  current_production: "models/current_production.txt"   # text file berisi run_id MLflow
+
+mlflow:
+  tracking_uri: "file:./mlruns"
+  experiment_name: "fireguard-ct"
+
+logs:
+  base: "logs"
+  data_fetch: "logs/data_fetch.log"
+  training: "logs/training.log"
+  monitoring: "logs/monitoring.log"
