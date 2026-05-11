@@ -53,6 +53,7 @@ ENV/
 
 # --- Testing & coverage ------------------------------------------------------
 .pytest_cache/
+pytest-cache-files-*/   # Variant pytest cache (non-standar dari beberapa runner)
 .coverage
 .coverage.*
 htmlcov/
