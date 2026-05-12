@@ -29,6 +29,10 @@ python-dotenv==1.0.1  # load .env (lokal dev only, JANGAN di-commit .env)
 mlflow==2.13.0
 dvc[s3]==3.50.1  # DVC dengan S3 remote (alternatif: dvc[gdrive])
 
+# --- Parquet I/O (data/processed) --------------------------------------------
+# Pinned <16 untuk kompatibilitas dengan mlflow 2.13.0 yang requires pyarrow<16
+pyarrow==15.0.2
+
 # --- Visualization & EDA -----------------------------------------------------
 matplotlib==3.8.4
 seaborn==0.13.2
