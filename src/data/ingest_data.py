@@ -3,8 +3,7 @@ Orchestrator Ingestion — entry-point untuk fetch semua sumber data.
 
 Tugas LK04: skrip orchestrator yang dipanggil oleh GitHub Actions cron
 (LK06) atau manual oleh developer. Loop semua provinsi yang
-terdefinisi di config/params.yaml dan panggil fetch_firms +
-fetch_weather.
+terdefinisi di config/params.yaml dan panggil fetch_firms + fetch_weather.
 
 Output:
     data/raw/firms/{province}_{timestamp}_UTC.csv
@@ -12,12 +11,8 @@ Output:
 
 Exit code:
     0 — semua provinsi sukses
-    1 — satu atau lebih provinsi gagal (lihat log)
+    1 — satu atau lebih provinsi gagal
     2 — config invalid / env tidak siap
-
-Run example:
-    python -m src.data.ingest_data --provinces riau
-    python -m src.data.ingest_data --provinces all --sources firms,weather
 """
 from __future__ import annotations
 
@@ -62,7 +57,6 @@ def _load_config(path: Path) -> dict:
 
 
 def _parse_provinces(cfg: dict, requested: Sequence[str]) -> list[ProvinceConfig]:
-    """Filter daftar provinsi sesuai request (atau semua kalau 'all')."""
     all_provinces_raw = (cfg.get("data") or {}).get("provinces") or []
     if not all_provinces_raw:
         raise RuntimeError("config.data.provinces is empty")
@@ -148,6 +142,13 @@ def main(argv: list[str] | None = None) -> int:
         level=args.log_level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+    # Auto-load .env untuk dev lokal/Codespace
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
 
     sources = {s.strip().lower() for s in args.sources.split(",") if s.strip()}
     invalid = sources - {"firms", "weather"}

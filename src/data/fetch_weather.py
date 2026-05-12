@@ -7,8 +7,7 @@ fitur untuk model FireGuard. Tidak butuh API key.
 Strategi koordinat:
     Open-Meteo butuh satu titik (lat, lon), bukan bbox. Kita pakai
     CENTROID dari bbox provinsi sebagai approximation. Untuk produksi
-    yang lebih akurat, bisa di-extend ke multi-point sampling (rata-rata
-    beberapa titik di dalam bbox).
+    yang lebih akurat, bisa di-extend ke multi-point sampling.
 
 Security & resource hygiene sama seperti fetch_firms.py:
     - URL allow-list (cegah SSRF)
@@ -19,7 +18,6 @@ Security & resource hygiene sama seperti fetch_firms.py:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -46,7 +44,6 @@ _DEFAULT_TIMEOUT_S = 30
 _MAX_RETRIES = 3
 _USER_AGENT = "FireGuard/0.1 (+education)"
 
-# Variabel daily yang relevan untuk model hotspot
 _DAILY_VARS = [
     "temperature_2m_max",
     "temperature_2m_min",
@@ -61,13 +58,12 @@ _DAILY_VARS = [
 class WeatherFetchSpec:
     """Parameter satu kali fetch cuaca."""
     province_id: str
-    bbox: tuple[float, float, float, float]  # (lat_min, lon_min, lat_max, lon_max)
-    past_days: int = 7  # historical context untuk feature rolling
-    forecast_days: int = 1  # untuk prediksi besok
+    bbox: tuple[float, float, float, float]
+    past_days: int = 7
+    forecast_days: int = 1
 
 
 def _bbox_centroid(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
-    """Centroid bbox sebagai titik representative provinsi."""
     lat_min, lon_min, lat_max, lon_max = bbox
     return ((lat_min + lat_max) / 2.0, (lon_min + lon_max) / 2.0)
 
@@ -122,16 +118,13 @@ def _http_get_json(url: str, timeout: int = _DEFAULT_TIMEOUT_S) -> dict:
 
 
 def _payload_to_dataframe(payload: dict, province_id: str) -> pd.DataFrame:
-    """Konversi response Open-Meteo JSON ke DataFrame harian."""
     daily = payload.get("daily")
     if not daily or "time" not in daily:
         raise RuntimeError(f"Open-Meteo response malformed for {province_id}: missing 'daily.time'")
     df = pd.DataFrame(daily)
     df["province_id"] = province_id
     df["fetched_at_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    # Standar kolom date
     df = df.rename(columns={"time": "date"})
-    # Tipe data eksplisit (defensive)
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
     return df
 
@@ -157,7 +150,6 @@ def fetch_one(spec: WeatherFetchSpec, out_dir: Path,
     fname = f"{spec.province_id}_{now}_UTC.csv"
     out_path = _safe_output_path(out_dir, fname)
 
-    # pandas.to_csv buka file internal-nya dengan context manager
     df.to_csv(out_path, index=False, encoding="utf-8")
     LOG.info("Wrote %s (%d rows, %d cols)", out_path.name, len(df), len(df.columns))
     return out_path
@@ -198,6 +190,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=args.log_level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
     spec = WeatherFetchSpec(
         province_id=args.province,
         bbox=tuple(args.bbox),

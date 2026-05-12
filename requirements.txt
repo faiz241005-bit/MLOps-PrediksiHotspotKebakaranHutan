@@ -30,6 +30,7 @@ mlflow==2.13.0
 dvc[s3]==3.50.1  # DVC dengan S3 remote (alternatif: dvc[gdrive])
 
 # --- Parquet I/O (data/processed) --------------------------------------------
+# Pinned <16 untuk kompatibilitas dengan mlflow 2.13.0 yang requires pyarrow<16
 pyarrow==15.0.2
 
 # --- Visualization & EDA -----------------------------------------------------

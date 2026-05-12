@@ -8,9 +8,9 @@ tidak overwrite data lama).
 Security checklist:
     - API key dibaca dari ENV var, tidak pernah hard-coded.
     - URL divalidasi terhadap allow-list (mencegah SSRF dari config corrupt).
-    - HTTP redirect dimatikan (allow_redirects=False) — cegah redirect ke host lain.
+    - HTTP redirect dimatikan (allow_redirects=False).
     - Path output divalidasi dengan resolve+prefix-check (cegah path traversal).
-    - Tidak ada `print(api_key)` atau logging key di error/log.
+    - Tidak ada print(api_key) atau logging key di error/log.
 
 Resource hygiene (mencegah memory & FD leak):
     - HTTP session dibungkus context manager (auto-close).
@@ -49,7 +49,6 @@ _DEFAULT_TIMEOUT_S = 30
 _MAX_RETRIES = 3
 _USER_AGENT = "FireGuard/0.1 (+education)"
 
-# FIRMS VIIRS_SNPP_NRT canonical columns (untuk validasi schema sederhana)
 _EXPECTED_COLUMNS = {
     "latitude", "longitude", "bright_ti4", "scan", "track",
     "acq_date", "acq_time", "satellite", "instrument", "confidence",
@@ -61,21 +60,18 @@ _EXPECTED_COLUMNS = {
 class FirmsFetchSpec:
     """Parameter satu kali fetch ke FIRMS API."""
     province_id: str
-    bbox: tuple[float, float, float, float]  # (lat_min, lon_min, lat_max, lon_max)
+    bbox: tuple[float, float, float, float]
     sensor: str = "VIIRS_SNPP_NRT"
-    day_range: int = 2  # max 10 sesuai docs FIRMS
+    day_range: int = 2
 
 
-# --- Helpers -----------------------------------------------------------------
 def _validate_url(url: str) -> None:
-    """Pastikan host URL ada di allow-list (security: cegah SSRF)."""
     host = urlparse(url).hostname
     if host not in _ALLOWED_HOSTS:
         raise ValueError(f"Disallowed host: {host!r}; allowed={sorted(_ALLOWED_HOSTS)}")
 
 
 def _validate_bbox(bbox: Iterable[float]) -> tuple[float, float, float, float]:
-    """Bbox: (lat_min, lon_min, lat_max, lon_max) — terurut & valid range."""
     b = tuple(float(x) for x in bbox)
     if len(b) != 4:
         raise ValueError(f"bbox must have 4 numbers, got {len(b)}")
@@ -89,7 +85,6 @@ def _validate_bbox(bbox: Iterable[float]) -> tuple[float, float, float, float]:
 
 def _build_url(api_key: str, sensor: str, bbox: tuple[float, float, float, float],
                day_range: int) -> str:
-    """Bentuk URL FIRMS sesuai docs resmi."""
     if not api_key or not api_key.strip():
         raise ValueError("api_key is empty — set NASA_FIRMS_API_KEY env var")
     if not 1 <= day_range <= 10:
@@ -102,7 +97,6 @@ def _build_url(api_key: str, sensor: str, bbox: tuple[float, float, float, float
 
 
 def _safe_output_path(out_dir: Path, filename: str) -> Path:
-    """Validasi: file output harus berada DI DALAM out_dir (cegah path traversal)."""
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     candidate = (out_dir / filename).resolve()
@@ -118,34 +112,19 @@ def _safe_output_path(out_dir: Path, filename: str) -> Path:
     reraise=True,
 )
 def _http_get(url: str, timeout: int = _DEFAULT_TIMEOUT_S) -> str:
-    """GET dengan retry exponential backoff. Body dikembalikan sebagai text."""
     _validate_url(url)
     with requests.Session() as session:
-        session.headers.update({"User-Agent": _USER_AGENT,
-                                "Accept": "text/csv"})
+        session.headers.update({"User-Agent": _USER_AGENT, "Accept": "text/csv"})
         resp = session.get(url, timeout=timeout, allow_redirects=False)
-        # Jangan log url lengkap (mengandung api key); log host & status saja
         LOG.debug("FIRMS GET host=%s status=%s bytes=%s",
                   urlparse(url).hostname, resp.status_code, len(resp.content))
         resp.raise_for_status()
         return resp.text
 
 
-# --- Public API --------------------------------------------------------------
 def fetch_one(spec: FirmsFetchSpec, api_key: str, out_dir: Path,
               now_utc: Optional[datetime] = None) -> Path:
-    """
-    Fetch satu provinsi, simpan CSV dengan nama ber-timestamp.
-
-    Args:
-        spec:    Parameter fetch (province_id, bbox, sensor, day_range).
-        api_key: NASA FIRMS API key (dari env var; jangan dari literal).
-        out_dir: Folder tujuan (akan dibuat jika belum ada).
-        now_utc: Waktu sekarang (override untuk testing reproducible).
-
-    Returns:
-        Path absolut file CSV yang ditulis.
-    """
+    """Fetch satu provinsi, simpan CSV dengan nama ber-timestamp."""
     bbox = _validate_bbox(spec.bbox)
     url = _build_url(api_key, spec.sensor, bbox, spec.day_range)
 
@@ -156,10 +135,8 @@ def fetch_one(spec: FirmsFetchSpec, api_key: str, out_dir: Path,
     except RetryError as e:
         raise RuntimeError(f"FIRMS fetch failed after retries for {spec.province_id}") from e
 
-    # Validasi schema sederhana — pastikan kolom yang diharapkan ada
     _validate_csv_header(csv_text, spec.province_id)
 
-    # Filename ber-timestamp UTC (non-destructive — tidak overwrite snapshot lama)
     now = (now_utc or datetime.now(timezone.utc)).strftime("%Y%m%d_%H%M%S")
     fname = f"{spec.province_id}_{now}_UTC.csv"
     out_path = _safe_output_path(out_dir, fname)
@@ -174,8 +151,6 @@ def fetch_one(spec: FirmsFetchSpec, api_key: str, out_dir: Path,
 
 
 def _validate_csv_header(csv_text: str, province_id: str) -> None:
-    """Pastikan header CSV mengandung kolom esensial FIRMS."""
-    # Streaming parse first row only — hemat memory
     with io.StringIO(csv_text) as buf:
         reader = csv.reader(buf)
         try:
@@ -189,7 +164,6 @@ def _validate_csv_header(csv_text: str, province_id: str) -> None:
             f"FIRMS response missing critical columns for {province_id}: "
             f"{sorted(missing_critical)}; got header={header}"
         )
-    # Warning saja kalau ada kolom non-critical yang hilang (FIRMS kadang ubah skema)
     missing_extra = _EXPECTED_COLUMNS - header_set
     if missing_extra:
         LOG.warning("Non-critical missing columns for %s: %s",
@@ -197,14 +171,13 @@ def _validate_csv_header(csv_text: str, province_id: str) -> None:
 
 
 def fetch_many(specs: Iterable[FirmsFetchSpec], api_key: str, out_dir: Path) -> list[Path]:
-    """Loop fetch beberapa provinsi sekaligus. Kalau salah satu gagal, lanjut yang lain."""
     written: list[Path] = []
     errors: list[tuple[str, str]] = []
     for spec in specs:
         try:
             p = fetch_one(spec, api_key=api_key, out_dir=out_dir)
             written.append(p)
-        except Exception as e:  # noqa: BLE001 — kita memang ingin tangkap apa pun di sini
+        except Exception as e:  # noqa: BLE001
             LOG.error("Fetch failed for %s: %s", spec.province_id, e)
             errors.append((spec.province_id, str(e)))
     if errors:
@@ -212,7 +185,6 @@ def fetch_many(specs: Iterable[FirmsFetchSpec], api_key: str, out_dir: Path) -> 
     return written
 
 
-# --- CLI ---------------------------------------------------------------------
 def _build_cli_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Fetch NASA FIRMS hotspot CSV per provinsi (FireGuard LK04)"
@@ -241,6 +213,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
+    # Auto-load .env untuk dev lokal/Codespace.
+    # Di CI GitHub Actions, env vars dari Secrets sudah real shell env — load_dotenv silent no-op.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
     api_key = os.getenv("NASA_FIRMS_API_KEY", "").strip()
     if not api_key:
         LOG.error("NASA_FIRMS_API_KEY is not set (check .env / GitHub Secrets)")
@@ -254,7 +234,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     try:
         path = fetch_one(spec, api_key=api_key, out_dir=Path(args.output_dir))
-        # Tulis path ke stdout — berguna untuk pipeline (DVC bisa ambil)
         print(path)
         return 0
     except Exception as e:  # noqa: BLE001
