@@ -27,7 +27,9 @@ python-dotenv==1.0.1  # load .env (lokal dev only, JANGAN di-commit .env)
 
 # --- Experiment tracking & versioning ----------------------------------------
 mlflow==2.13.0
-dvc[s3]==3.50.1  # DVC dengan S3 remote (alternatif: dvc[gdrive])
+dvc==3.50.1
+dvc-gdrive==3.0.1   # remote storage Google Drive (LK05)
+# dvc-s3==3.0.1     # alternatif S3-compatible (Cloudflare R2, AWS, MinIO)
 
 # --- Parquet I/O (data/processed) --------------------------------------------
 # Pinned <16 untuk kompatibilitas dengan mlflow 2.13.0 yang requires pyarrow<16
