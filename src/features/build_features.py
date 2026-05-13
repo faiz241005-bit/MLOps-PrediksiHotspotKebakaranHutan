@@ -319,22 +319,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-.empty:
-        LOG.error("No processed data — run preprocess.py first (LK04)")
-        return 1
-
-    LOG.info("Loaded %d rows", len(processed))
-    cfg = FeatureConfig()
-    features = build_features(processed, cfg)
-
-    if features.empty:
-        LOG.error("Feature dataset empty after pipeline — periksa data input")
-        return 1
-
-    path = write_features(features, args.output_dir)
-    print(path)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
