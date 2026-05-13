@@ -122,3 +122,4 @@ logs/
 .LSOverride
 $RECYCLE.BIN/
 ehthumbs.db
+secrets/

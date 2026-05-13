@@ -27,7 +27,11 @@ python-dotenv==1.0.1  # load .env (lokal dev only, JANGAN di-commit .env)
 
 # --- Experiment tracking & versioning ----------------------------------------
 mlflow==2.13.0
-dvc[s3]==3.50.1  # DVC dengan S3 remote (alternatif: dvc[gdrive])
+dvc==3.50.1
+dvc-s3==3.0.1       # S3-compatible remote (Filebase, Cloudflare R2, AWS, MinIO)
+# dvc-gdrive==3.0.1 # NOT USED — Google personal Drive blocked oleh app verification + SA quota
+# pathspec pinned untuk hindari import error '_DIR_MARK' di dvc 3.50.1
+pathspec>=0.10,<0.12
 
 # --- Parquet I/O (data/processed) --------------------------------------------
 # Pinned <16 untuk kompatibilitas dengan mlflow 2.13.0 yang requires pyarrow<16
