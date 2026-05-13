@@ -68,22 +68,11 @@ jobs:
     needs: test
     timeout-minutes: 20
 
-    # MinIO service container — S3-compatible storage di dalam workflow
-    # Demonstrate workflow yang siap untuk production remote (R2/S3/Filebase)
-    services:
-      minio:
-        image: bitnami/minio:2024
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: fireguard-dvc
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    # Catatan: MinIO service container dihapus karena tag image instabil di
+    # Actions runner (Docker pull rate-limited). Workflow tetap demonstrate
+    # automated training via synthetic data generator (CI fallback).
+    # Production upgrade: setup DVC remote di Cloudflare R2/Backblaze B2/AWS S3
+    # lalu replace step "Generate synthetic features" dengan 'dvc pull data/features'.
 
     outputs:
       run_id: ${{ steps.train_step.outputs.run_id }}
@@ -103,11 +92,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Verify MinIO healthy
-        run: |
-          curl -f http://localhost:9000/minio/health/live
-          echo "MinIO ready at localhost:9000"
 
       - name: Generate synthetic features (CI fallback for DVC remote)
         # Kalau real DVC remote tersedia, ganti step ini dengan 'dvc pull'.
