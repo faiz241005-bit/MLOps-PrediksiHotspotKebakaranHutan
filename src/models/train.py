@@ -21,6 +21,7 @@ Security & resource hygiene:
     - MLflow tracking URI dari env atau default lokal file://
     - Tidak ada loop training yang menyimpan dataset di memory secara redundan
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,9 +52,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 @dataclass
 class TrainParams:
     """Hyperparameter set yang akan di-log ke MLflow."""
+
     algorithm: str  # "regressor" | "classifier"
     learning_rate: float = 0.05
-    n_estimators: int = 500
+    n_estimators: int = 600
     max_depth: int = 8
     num_leaves: int = 31
     min_child_samples: int = 20
@@ -67,7 +69,10 @@ class TrainParams:
 _TARGET_REGRESSOR = "hotspot_count_tomorrow"
 _TARGET_CLASSIFIER = "risk_level"
 _NON_FEATURE_COLS = {
-    "province_id", "date", _TARGET_REGRESSOR, _TARGET_CLASSIFIER,
+    "province_id",
+    "date",
+    _TARGET_REGRESSOR,
+    _TARGET_CLASSIFIER,
 }
 
 
@@ -107,8 +112,13 @@ def _time_aware_split(
     cutoff = df["date"].max() - pd.Timedelta(days=holdout_days)
     train = df[df["date"] <= cutoff].copy()
     test = df[df["date"] > cutoff].copy()
-    LOG.info("Time-aware split: train=%d rows (≤ %s), test=%d rows (> %s)",
-             len(train), cutoff.date(), len(test), cutoff.date())
+    LOG.info(
+        "Time-aware split: train=%d rows (≤ %s), test=%d rows (> %s)",
+        len(train),
+        cutoff.date(),
+        len(test),
+        cutoff.date(),
+    )
     return train, test
 
 
@@ -220,8 +230,10 @@ def train_classifier(
         "n_classes": float(n_classes),
     }
     LOG.info("Classifier metrics: %s", metrics)
-    LOG.info("Classification report:\n%s",
-             classification_report(y_test, y_pred, zero_division=0))
+    LOG.info(
+        "Classification report:\n%s",
+        classification_report(y_test, y_pred, zero_division=0),
+    )
     return model, metrics
 
 
@@ -232,7 +244,11 @@ def _setup_mlflow(experiment_name: str, tracking_uri: Optional[str] = None) -> N
     """Konfigurasi MLflow tracking URI + experiment."""
     import mlflow
 
-    uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI") or f"file://{_PROJECT_ROOT}/mlruns"
+    uri = (
+        tracking_uri
+        or os.getenv("MLFLOW_TRACKING_URI")
+        or f"file://{_PROJECT_ROOT}/mlruns"
+    )
     mlflow.set_tracking_uri(uri)
     mlflow.set_experiment(experiment_name)
     LOG.info("MLflow tracking_uri=%s experiment=%s", uri, experiment_name)
@@ -256,8 +272,7 @@ def run_experiment(
         mlflow.log_params(asdict(params))
         mlflow.log_param("holdout_days", holdout_days)
         mlflow.log_param("dataset_n_rows", len(features_df))
-        mlflow.log_param("dataset_n_provinces",
-                         features_df["province_id"].nunique())
+        mlflow.log_param("dataset_n_provinces", features_df["province_id"].nunique())
 
         # 2. Train + evaluate
         if params.algorithm == "regressor":
@@ -282,13 +297,15 @@ def run_experiment(
 
         if params.algorithm == "regressor":
             mlflow.lightgbm.log_model(
-                model, artifact_path="model",
+                model,
+                artifact_path="model",
                 input_example=input_example,
                 registered_model_name=model_name if register else None,
             )
         else:
             mlflow.lightgbm.log_model(
-                model, artifact_path="model",
+                model,
+                artifact_path="model",
                 input_example=input_example,
                 registered_model_name=model_name if register else None,
             )
@@ -303,12 +320,16 @@ def run_experiment(
 def _build_cli_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="FireGuard training (LK06)")
     p.add_argument("--algorithm", required=True, choices=["regressor", "classifier"])
-    p.add_argument("--features-dir", type=Path,
-                   default=_PROJECT_ROOT / "data" / "features")
+    p.add_argument(
+        "--features-dir", type=Path, default=_PROJECT_ROOT / "data" / "features"
+    )
     p.add_argument("--experiment-name", default="fireguard-ct")
     p.add_argument("--holdout-days", type=int, default=14)
-    p.add_argument("--register", action="store_true",
-                   help="Register model ke MLflow Model Registry")
+    p.add_argument(
+        "--register",
+        action="store_true",
+        help="Register model ke MLflow Model Registry",
+    )
 
     # Hyperparameters yang di-tune untuk variasi run
     p.add_argument("--learning-rate", type=float, default=0.05)
@@ -320,8 +341,9 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p.add_argument("--reg-lambda", type=float, default=0.1)
     p.add_argument("--random-state", type=int, default=42)
 
-    p.add_argument("--log-level", default="INFO",
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    p.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
     return p
 
 
@@ -335,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     # Auto-load .env (untuk env vars seperti MLFLOW_TRACKING_URI custom)
     try:
         from dotenv import load_dotenv
+
         load_dotenv()
     except ImportError:
         pass
@@ -358,7 +381,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = run_experiment(
-            params, features_df,
+            params,
+            features_df,
             experiment_name=args.experiment_name,
             holdout_days=args.holdout_days,
             register=args.register,
