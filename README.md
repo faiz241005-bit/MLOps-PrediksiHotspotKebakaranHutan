@@ -83,7 +83,6 @@ cp .env.example .env
 Untuk GitHub Actions, simpan kunci di **Repo Settings → Secrets and variables → Actions**:
 
 * `NASA_FIRMS_API_KEY`
-* `BMKG_API_KEY` (opsional, BMKG saat ini publik tanpa key)
 * `DVC_REMOTE_URL` (jika pakai S3/GDrive)
 
 ### 3.4 Verifikasi Setup
