@@ -1,0 +1,70 @@
+# =============================================================================
+# Docker build context exclusions
+# Tujuan: kecilkan build context + cegah leak file sensitif ke image.
+# =============================================================================
+
+# Secrets & local config
+.env
+.env.*
+*.pem
+*.key
+.secrets.baseline
+
+# Git metadata
+.git
+.gitignore
+.gitattributes
+.github
+
+# Python build artefacts
+__pycache__
+*.py[cod]
+*.so
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+.eggs
+build
+dist
+
+# Virtualenvs
+.venv
+venv
+env
+
+# Editor & OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# DVC & big data — TIDAK perlu masuk image (mount via volume kalau perlu)
+.dvc/cache
+.dvc/tmp
+data/raw
+data/processed
+data/features
+data/external
+mlruns
+mlartifacts
+models/saved
+*.parquet
+*.csv
+
+# Notebooks & docs (tidak dibutuhkan saat serve)
+notebooks
+docs
+*.md
+LICENSE
+LK0*.docx
+
+# Tests (tidak dibutuhkan di runtime image)
+tests
+pytest.ini
+
+# Devcontainer
+.devcontainer
+
+# Pre-commit
+.pre-commit-config.yaml
