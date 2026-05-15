@@ -1,11 +1,3 @@
-# MLOps-FireGuard
-
-> Forest Fire Hotspot Detection System — Continual-Learning MLOps Project
-> Wilayah: Kalimantan Tengah, Kalimantan Barat, Riau, Sumatera Selatan, Jambi
-> Status: 🚧 Under construction (LK01–LK09)
-
----
-
 ## 1. Tujuan Proyek
 
 **FireGuard** adalah platform berbasis AI yang memprediksi jumlah dan tingkat risiko titik panas (hotspot) kebakaran hutan/lahan untuk **satu hari ke depan**, per provinsi di Indonesia.
@@ -117,7 +109,168 @@ mlflow ui --port 5000
 
 ---
 
-## 3a. Cara Menjalankan dengan Docker Compose (LK09)
+## 3a. Menjalankan Skrip Pengumpul Data
+
+Pipeline data fetch ada di `src/data/`. Tiga skrip utama berjalan berurutan
+untuk membawa data mentah ke bentuk siap-feature.
+
+### 3a.1 Ingestion — NASA FIRMS + Open-Meteo
+
+```bash
+# Pastikan NASA_FIRMS_API_KEY sudah di .env
+python -m src.data.ingest_data --provinces all
+```
+
+Argumen yang berguna:
+
+| Flag | Default | Fungsi |
+|---|---|---|
+| `--provinces` | wajib | List provinsi (`riau kalteng kalbar sumsel jambi`) atau `all` |
+| `--sources` | `firms,weather` | Pilih sumber data yang di-fetch |
+| `--raw-dir` | `data/raw/` | Folder output (di-DVC-track) |
+| `--log-level` | `INFO` | `DEBUG` untuk troubleshoot |
+
+Output: `data/raw/firms/{province}_*.csv` + `data/raw/weather/{province}_*.csv`,
+masing-masing dengan suffix timestamp UTC.
+
+### 3a.2 Preprocess — Cleaning + Join
+
+```bash
+python -m src.data.preprocess
+```
+
+Menggabungkan hotspot detection dengan cuaca per provinsi & hari (WIB, UTC+7).
+Output: `data/processed/firms_weather_joined_*.parquet`.
+
+### 3a.3 Feature Engineering
+
+```bash
+python -m src.features.build_features
+```
+
+Bangun 27 fitur (rolling, lag, cyclical, days_since_rain) + 2 target
+(`hotspot_count_tomorrow`, `risk_level`). Output: `data/features/training_dataset_*.parquet`.
+
+> **One-liner end-to-end:**
+> ```bash
+> python -m src.data.ingest_data --provinces all && \
+> python -m src.data.preprocess && \
+> python -m src.features.build_features
+> ```
+
+Detail flag & troubleshooting di [`docs/LK04_RUN_GUIDE.md`](docs/LK04_RUN_GUIDE.md).
+
+---
+
+## 3b. Versioning Data dengan DVC
+
+Folder `data/` (`raw/`, `processed/`, `features/`) **tidak masuk Git** — dilacak
+oleh **DVC** (Data Version Control). Alur penambahan versi data:
+
+### 3b.1 Tambah Versi Baru
+
+Setelah fetch data baru di section 3a:
+
+```bash
+dvc add data/raw/firms data/raw/weather
+```
+
+Output: file `.dvc` (kecil, hash + pointer) yang **masuk Git**, sementara data
+asli masuk `.dvc/cache`. Pesan akhir akan kasih perintah `git add` yang siap
+di-paste.
+
+```bash
+git add data/raw/firms.dvc data/raw/weather.dvc data/raw/.gitignore
+git commit -m "data: bump FIRMS+weather snapshot $(date +%Y-%m-%d)"
+```
+
+### 3b.2 Push ke Remote DVC
+
+```bash
+dvc push
+```
+
+DVC akan upload content yang berubah ke remote (lokal `/tmp/fireguard-dvc-remote`
+saat ini; production upgrade ke S3/R2/Filebase). Daftar remote tersedia:
+
+```bash
+dvc remote list
+```
+
+### 3b.3 Pull di Mesin Lain
+
+Setelah `git pull` ambil file `.dvc`, jalankan:
+
+```bash
+dvc pull
+```
+
+DVC akan rekonstruksi `data/raw/`, `data/processed/`, `data/features/`
+berdasarkan hash. Tidak perlu fetch ulang dari API.
+
+### 3b.4 Lihat Riwayat Versi
+
+```bash
+git log --oneline -- data/raw/firms.dvc      # commit yang ubah snapshot FIRMS
+dvc data status                              # state lokal vs remote
+```
+
+Setiap commit Git yang mengubah file `.dvc` = satu versi dataset. Bisa
+`git checkout <hash>` lalu `dvc checkout` untuk kembali ke state lama.
+
+Detail (cara setup remote cloud + recovery) di [`docs/LK05_DVC_GUIDE.md`](docs/LK05_DVC_GUIDE.md).
+
+---
+
+## 3c. Versi Model Aktif untuk Inferensi
+
+Status model produksi di-track di file [`models/current_production.json`](models/current_production.json):
+
+```json
+{
+  "model_name": "fireguard-regressor",
+  "version": 1,
+  "stage": "Production",
+  "run_id": "11cc4affd84247dab2397f13b704712d"
+}
+```
+
+### Versi Aktif Saat Ini
+
+| Field | Nilai |
+|---|---|
+| **Registered model** | `fireguard-regressor` |
+| **Version** | `1` |
+| **Stage** | `Production` |
+| **Algoritma** | LightGBM Regressor |
+| **Target** | `hotspot_count_tomorrow` (prediksi jumlah hotspot besok) |
+
+### Alasan Versi Ini Aktif
+
+1. **Lolos threshold LK01** — RMSE ≤ 12 hotspot, MAE ≤ 8 hotspot saat di-evaluate di test set out-of-time (April–Mei 2026 vs train Jan–Mar 2026).
+2. **Lolos CI/CD gate (LK08)** — workflow `mlops-automation.yaml` menjalankan `src/models/evaluate.py` dengan `--ci-mode` lenient untuk synthetic, dan threshold full untuk run dengan real data. Versi 1 lolos keduanya.
+3. **Promoted via registry CLI** — di-transition dari `Staging` → `Production` lewat `python -m src.models.registry transition --model fireguard-regressor --version 1 --stage Production`, dengan flag `--archive-existing` untuk auto-archive versi lama.
+4. **Reproducible** — `run_id` `11cc4af…` merujuk ke MLflow run yang menyimpan: hyperparameter, training data hash (DVC), feature importances, metric, dan artifact model. Bisa di-load lagi kapan saja dengan `mlflow.pyfunc.load_model("models:/fireguard-regressor/Production")`.
+
+### Cara Cek dari Codespace
+
+```bash
+# Listing semua versi + stage-nya
+python -m src.models.registry list --model fireguard-regressor
+
+# Test load model production
+python -c "import mlflow; m=mlflow.pyfunc.load_model('models:/fireguard-regressor/Production'); print('OK:', m.metadata)"
+```
+
+### Kapan Akan Ada Versi Baru?
+
+Trigger retrain otomatis (lihat section 5 — Continual Training Strategy). Setiap retrain yang lolos threshold akan auto-promote ke `Staging`. Promosi `Staging → Production` saat ini **manual** (best practice MLOps — butuh approval) lewat CLI `registry transition` atau workflow `workflow_dispatch`.
+
+Detail siklus hidup model di [`docs/LK07_REGISTRY_GUIDE.md`](docs/LK07_REGISTRY_GUIDE.md).
+
+---
+
+## 3d. Cara Menjalankan dengan Docker Compose
 
 Stack penuh dapat dijalankan dengan **satu perintah** menggunakan Docker
 Compose. Compose akan men-orchestrate dua container:
@@ -127,11 +280,11 @@ Compose. Compose akan men-orchestrate dua container:
 | `mlflow-server` | 5000 | Tracking + Model Registry (sqlite backend, filesystem artifact store) |
 | `api-service`   | 8000 | FastAPI inference (`/predict`, `/health`, `/model-info`) |
 
-### 3a.1 Prasyarat
+### 3d.1 Prasyarat
 
 - Docker Engine ≥ 24 + Docker Compose v2 (sudah include di Codespaces)
 
-### 3a.2 Build & Run
+### 3d.2 Build & Run
 
 ```bash
 docker compose up -d --build
@@ -150,7 +303,7 @@ fireguard-mlflow    fireguard/mlflow-server:1.0    Up (healthy)        0.0.0.0:5
 fireguard-api       fireguard/api-service:1.0      Up (healthy)        0.0.0.0:8000->8000/tcp
 ```
 
-### 3a.3 Verifikasi
+### 3d.3 Verifikasi
 
 ```bash
 curl http://localhost:8000/health
@@ -162,7 +315,7 @@ curl http://localhost:8000/model-info
 
 Buka MLflow UI di browser: <http://localhost:5000>.
 
-### 3a.4 Lifecycle
+### 3d.4 Lifecycle
 
 ```bash
 docker compose logs -f api-service    # follow logs satu service
@@ -204,30 +357,13 @@ Empat trigger retrain (lihat detail di LK01_FireGuard.docx):
 
 ---
 
-## 6. Roadmap LK
-
-| LK | Topik | Status |
-|---|---|---|
-| LK01 | Inisiasi proyek + Continual Learning strategy | ✅ Done |
-| LK02 | Repo + Codespaces + GitHub Flow | ✅ Done |
-| LK03 | Pipeline arsitektur (ETL diagram) | ✅ Done |
-| LK04 | Data fetcher + preprocessing | ✅ Done |
-| LK05 | DVC versioning | ✅ Done |
-| LK06 | Training pipeline + MLflow tracking | ✅ Done |
-| LK07 | Model Registry + stage transition | ✅ Done |
-| LK08 | CI/CD GitHub Actions (automation pipeline) | ✅ Done |
-| LK09 | Docker Compose orchestration (api + mlflow) | ✅ Done |
-| LK10 | Monitoring & drift detection | ⏳ Pending |
-
----
-
-## 7. Lisensi
+## 6. Lisensi
 
 [MIT](LICENSE) — bebas dipakai dengan atribusi.
 
 ---
 
-## 8. Kontributor
+## 7. Kontributor
 
 * **Izu** — pengembang utama (mahasiswa MLOps, individual project)
 

@@ -2,7 +2,13 @@
   "name": "MLOps-FireGuard (Python 3.11)",
   "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
 
-  "features": {},
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "latest",
+      "moby": true,
+      "installDockerComposeSwitch": true
+    }
+  },
 
   "customizations": {
     "vscode": {
