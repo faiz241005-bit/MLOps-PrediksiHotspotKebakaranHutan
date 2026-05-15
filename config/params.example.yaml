@@ -35,15 +35,18 @@ data:
     open_meteo:
       base_url: "https://api.open-meteo.com/v1/forecast"
       timeout_seconds: 30
-    bmkg:
-      base_url: "https://api.bmkg.go.id/publik/prakiraan-cuaca"
-      timeout_seconds: 30
 
 features:
-  rolling_windows_hours: [24, 72]
+  # Daily aggregation per (province_id, date). Rolling windows dalam HARI.
+  rolling_windows_days: [1, 3, 7]
+  # Lag features (kemarin, 3 hari, 1 minggu)
+  lag_windows_days: [1, 3, 7]
+  # Features yang dimonitor untuk drift detection (PSI / KS test)
   drift_features:
-    - hotspot_count_24h
+    - hotspot_count
     - frp_mean
+    - precipitation_sum
+    - relative_humidity_2m_mean
     - days_since_rain
 
 continual_training:

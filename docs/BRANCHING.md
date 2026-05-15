@@ -100,7 +100,7 @@ Setiap PR (termasuk self-review) harus mencentang:
 |---|---|
 | API key leak ke Git | `.env` di `.gitignore`; gunakan GitHub Actions Secrets di CI |
 | API key di log | Jangan `print()` env vars; gunakan structured logging dengan field allow-list |
-| SSRF dari URL eksternal | Validasi URL ke domain allow-list (`firms.modaps.eosdis.nasa.gov`, `api.open-meteo.com`, `api.bmkg.go.id`, `api.openaq.org`) |
+| SSRF dari URL eksternal | Validasi URL ke domain allow-list (`firms.modaps.eosdis.nasa.gov`, `api.open-meteo.com`) |
 | Path traversal saat read/write | Gunakan `pathlib.Path` + `.resolve()` + cek prefix; jangan concat string mentah |
 | Pickle deserialization | Hindari `pickle.load` dari source tidak terpercaya; pakai `joblib` dengan integrity check (mis. SHA256) |
 | Dependency CVE | Audit periodik: `pip-audit` di CI |
