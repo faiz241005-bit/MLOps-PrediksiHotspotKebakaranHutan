@@ -41,11 +41,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 # Default: bind ke semua interface dalam container network (compose akan
 # expose ke host kalau diperlukan via ports: di compose.yaml).
-# --serve-artifacts: server juga melayani artifact via HTTP, jadi api-service
-# bisa pull artifact tanpa perlu shared volume.
+#
+# --serve-artifacts                : server menerima upload/download artifact via HTTP.
+# --artifacts-destination /mlflow/artifacts : path SERVER-side untuk simpan artifact.
+#
+# PENTING: jangan pakai --default-artifact-root path lokal — itu bikin client
+# coba akses filesystem langsung (Permission denied di luar container).
+# Dengan --artifacts-destination + --serve-artifacts, client otomatis pakai
+# scheme mlflow-artifacts:// yang proxy lewat HTTP — works dari mana saja.
 CMD ["mlflow", "server", \
      "--host", "0.0.0.0", \
      "--port", "5000", \
      "--backend-store-uri", "sqlite:////mlflow/db/mlflow.db", \
-     "--default-artifact-root", "/mlflow/artifacts", \
+     "--artifacts-destination", "/mlflow/artifacts", \
      "--serve-artifacts"]
