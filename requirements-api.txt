@@ -1,0 +1,29 @@
+# =============================================================================
+# FireGuard API container — minimal runtime deps
+# Versi terpangkas dari requirements.txt — hanya yang dibutuhkan untuk
+# FastAPI inference + MLflow client model loading. Tidak ada tooling dev,
+# tidak ada jupyter, tidak ada geopandas/shapely (tidak dipakai saat serve).
+# Memperkecil image size + attack surface.
+# =============================================================================
+
+# --- Core ML runtime ---------------------------------------------------------
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.4.2
+lightgbm==4.3.0
+scipy==1.13.0
+
+# --- Pydantic & config -------------------------------------------------------
+pydantic==2.7.1
+pyyaml==6.0.1
+
+# --- MLflow client (untuk load model dari registry) --------------------------
+mlflow==2.13.0
+pyarrow==15.0.2
+
+# --- HTTP client (mlflow tracking) -------------------------------------------
+requests==2.32.3
+
+# --- Serving -----------------------------------------------------------------
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
