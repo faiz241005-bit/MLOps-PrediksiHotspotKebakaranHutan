@@ -1,0 +1,124 @@
+# =============================================================================
+# FireGuard — Docker Compose orchestration (LK09)
+# =============================================================================
+# Dua layanan:
+#   1. mlflow-server  : MLflow Tracking + Model Registry (sqlite backend)
+#   2. api-service    : FastAPI inference yang load model dari mlflow-server
+#
+# Network:
+#   fireguard-net (custom bridge) — service discovery via nama service
+#   ("mlflow-server" resolvable dari "api-service" tanpa expose ke host)
+#
+# Volumes (named):
+#   mlflow-db        — sqlite database (metadata: experiments, runs, registry)
+#   mlflow-artifacts — model artifacts (.pkl, model.yaml, dll)
+#
+# Quick start:
+#   docker compose up -d
+#   docker compose ps                  # cek status (semua harus healthy)
+#   docker compose logs -f api-service # ikuti log
+#   docker compose down                # stop (volumes tetap)
+#   docker compose down -v             # stop + hapus volumes (data hilang)
+# =============================================================================
+
+# Catatan: kunci `version:` sengaja dihilangkan — Compose v2 sudah deprecated key
+# tersebut. Compose otomatis pakai schema terbaru.
+
+services:
+  # ---------------------------------------------------------------------------
+  # mlflow-server — Tracking + Registry
+  # ---------------------------------------------------------------------------
+  mlflow-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    image: fireguard/mlflow-server:1.0
+    container_name: fireguard-mlflow
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      # Expose ke host supaya bisa buka UI di http://localhost:5000.
+      # Hapus blok ini kalau hanya butuh internal access dari api-service.
+      - "5000:5000"
+    volumes:
+      - mlflow-db:/mlflow/db
+      - mlflow-artifacts:/mlflow/artifacts
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # Memory leak guard: kasih hard limit supaya container tidak balloon ke
+    # seluruh RAM host kalau ada bug di MLflow process.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    # Hardening
+    security_opt:
+      - no-new-privileges:true
+    read_only: false   # MLflow butuh tulis ke /tmp dan volume; bukan readonly
+
+  # ---------------------------------------------------------------------------
+  # api-service — FastAPI inference
+  # ---------------------------------------------------------------------------
+  api-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: fireguard/api-service:1.0
+    container_name: fireguard-api
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      # Expose ke host — client (curl/Postman/dashboard) hit di sini.
+      - "8000:8000"
+    environment:
+      # Service discovery: pakai nama service `mlflow-server`, BUKAN localhost.
+      # Compose default DNS me-resolve nama service ke IP container.
+      MLFLOW_TRACKING_URI: "http://mlflow-server:5000"
+      FIREGUARD_MODEL_NAME: "fireguard-regressor"
+      FIREGUARD_MODEL_STAGE: "Production"
+      LOG_LEVEL: "INFO"
+      # Jangan log credential di prod — env vars otomatis di-mask oleh Compose
+      # selama tidak di-echo manual.
+    depends_on:
+      mlflow-server:
+        # Tunggu mlflow-server HEALTHY (bukan sekedar STARTED) sebelum start.
+        # Ini mencegah race condition di startup (api gagal connect → exit).
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+          cpus: "1.5"
+    security_opt:
+      - no-new-privileges:true
+
+# ---------------------------------------------------------------------------
+# Custom bridge network — terisolasi dari default bridge, service discovery
+# via DNS internal Compose.
+# ---------------------------------------------------------------------------
+networks:
+  fireguard-net:
+    name: fireguard-net
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# Named volumes — persisten antar `docker compose down/up` (kecuali `-v`)
+# ---------------------------------------------------------------------------
+volumes:
+  mlflow-db:
+    name: fireguard-mlflow-db
+  mlflow-artifacts:
+    name: fireguard-mlflow-artifacts
