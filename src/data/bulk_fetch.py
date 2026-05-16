@@ -6,8 +6,10 @@ data terkini, script ini meng-cover RANGE WAKTU SEMBARANG (default skenario:
 1 tahun historical) untuk men-train model dengan dataset yang memadai.
 
 Strategi:
-    FIRMS: NASA FIRMS API hard-limit 10 hari per call → chunking otomatis,
-           pakai parameter start_date di URL untuk historical fetch.
+    FIRMS: NASA FIRMS Area API hard-limit 5 hari per call (per 2026) → chunking
+           otomatis, pakai parameter start_date di URL untuk historical fetch.
+           Catatan: NRT sources hanya retain last ~60 hari. Untuk archive lebih
+           lama, perlu FIRMS download tool manual (tidak ada di Area API).
     Weather: Open-Meteo Archive endpoint (archive-api.open-meteo.com) yang
              support range tanggal tanpa batas → satu call per provinsi.
 
@@ -21,15 +23,14 @@ Security & memory hygiene (sama pattern dengan fetch_firms.py LK04):
     - Stream-write per chunk; tidak hold semua CSV di RAM sekaligus
 
 CLI:
+    # Last 60 hari (recommended — full NRT data coverage):
     python -m src.data.bulk_fetch \\
-        --start-date 2025-05-15 --end-date 2026-05-15 \\
+        --start-date 2026-03-16 --end-date 2026-05-14 \\
         --provinces all
 
-    # Untuk window > 60 hari: NASA FIRMS NRT tidak punya data lama, ganti
-    # sensor ke Standard Processing (SP):
-    python -m src.data.bulk_fetch \\
-        --start-date 2025-05-15 --end-date 2026-05-15 \\
-        --provinces all --sensor VIIRS_SNPP_SP
+    # Window lebih panjang akan tetap berjalan, tapi chunks > 60 hari ke
+    # belakang akan return empty CSV dari NASA NRT (sebelum 2026-03-16).
+    # Default sensor: VIIRS_SNPP_NRT (Area API tidak support SP variants).
 """
 from __future__ import annotations
 
@@ -67,7 +68,7 @@ _ALLOWED_HOSTS = frozenset({
 _DEFAULT_TIMEOUT_S = 30
 _MAX_RETRIES = 3
 _USER_AGENT = "FireGuard/0.1 (+bulk-historical)"
-_FIRMS_MAX_DAYS_PER_CALL = 10  # NASA FIRMS hard limit, tidak bisa dilampaui
+_FIRMS_MAX_DAYS_PER_CALL = 5   # NASA FIRMS Area API hard limit (per 2026: [1..5])
 
 # Daily weather vars — sama persis dengan fetch_weather.py supaya preprocess
 # bisa join hasil bulk_fetch dengan hasil fetch_weather tanpa drift schema.
@@ -163,6 +164,14 @@ def _http_get_text(url: str, timeout: int = _DEFAULT_TIMEOUT_S) -> str:
     headers = {"User-Agent": _USER_AGENT, "Accept": "text/csv"}
     with requests.Session() as session:
         resp = session.get(url, headers=headers, timeout=timeout)
+        if not resp.ok:
+            # Log body (truncated) supaya pesan asli NASA terlihat — tanpa
+            # ini, tenacity wrapper menelan info diagnostik. Body sering
+            # mengandung pesan seperti "Invalid source" atau "Date range
+            # exceeds availability for source X".
+            body_preview = (resp.text or "")[:500].replace("\n", " ")
+            LOG.warning("HTTP %s from FIRMS — host=%s; body: %s",
+                        resp.status_code, urlparse(url).hostname, body_preview)
         resp.raise_for_status()
         LOG.debug("FIRMS GET host=%s status=%s bytes=%s",
                   urlparse(url).hostname, resp.status_code, len(resp.content))
@@ -180,6 +189,10 @@ def _http_get_json(url: str, timeout: int = _DEFAULT_TIMEOUT_S) -> dict:
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
     with requests.Session() as session:
         resp = session.get(url, headers=headers, timeout=timeout)
+        if not resp.ok:
+            body_preview = (resp.text or "")[:500].replace("\n", " ")
+            LOG.warning("HTTP %s from %s — body: %s",
+                        resp.status_code, urlparse(url).hostname, body_preview)
         resp.raise_for_status()
         LOG.debug("Archive GET host=%s status=%s bytes=%s",
                   urlparse(url).hostname, resp.status_code, len(resp.content))
@@ -387,9 +400,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
                    help="Province IDs atau 'all' (e.g. --provinces riau kalteng)")
     p.add_argument("--sources", default="firms,weather",
                    help="Comma-separated: firms, weather (default: keduanya)")
-    p.add_argument("--sensor", default="VIIRS_SNPP_SP",
-                   help="FIRMS sensor: VIIRS_SNPP_SP (archive, default) atau "
-                        "VIIRS_SNPP_NRT (last 60 hari). MODIS_SP/MODIS_NRT juga valid.")
+    p.add_argument("--sensor", default="VIIRS_SNPP_NRT",
+                   help="FIRMS Area API sensor: VIIRS_SNPP_NRT (default), "
+                        "VIIRS_NOAA20_NRT, VIIRS_NOAA21_NRT, MODIS_NRT, "
+                        "LANDSAT_NRT, GOES_NRT. Catatan: SP (Standard Processing) "
+                        "variants TIDAK didukung Area API — kalau butuh archive "
+                        "lebih dari 60 hari, pakai FIRMS download tool manual.")
     p.add_argument("--config", type=Path, default=_PROJECT_ROOT / "config" / "params.yaml")
     p.add_argument("--raw-dir", type=Path, default=_PROJECT_ROOT / "data" / "raw")
     p.add_argument("--sleep-between-chunks", type=float, default=1.0,
@@ -420,6 +436,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     LOG.info("Window: %s → %s (%d hari)", window.start, window.end, window.days)
+
+    # NASA FIRMS Area API NRT sources hanya retain ~60 hari data terakhir.
+    # Kalau user minta data lebih lama, sebagian besar chunks akan return empty
+    # atau HTTP 400. Beri peringatan eksplisit di awal.
+    days_back_from_today = (date.today() - window.start).days
+    if "firms" in {s.strip().lower() for s in args.sources.split(",")} \
+            and args.sensor.endswith("_NRT") and days_back_from_today > 60:
+        LOG.warning(
+            "Start date %s berusia %d hari → di luar window NRT (~60 hari).",
+            window.start, days_back_from_today,
+        )
+        LOG.warning(
+            "Chunks tertua kemungkinan akan return empty/error dari NASA. "
+            "Lanjut, tapi expect data hanya untuk ~60 hari terakhir."
+        )
 
     try:
         provinces = _load_provinces(
