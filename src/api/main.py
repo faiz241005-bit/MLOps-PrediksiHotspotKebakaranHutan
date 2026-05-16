@@ -69,6 +69,17 @@ FEATURE_COLUMNS = [
     "days_since_rain",
 ]
 
+# Kolom yang HARUS int sesuai signature model training. MLflow membedakan
+# 2 tipe integer:
+#   - int32 ("integer" di MLflow schema) — month, day_of_year (kalender)
+#   - int64 ("long" di MLflow schema) — counter columns
+# Kalau dikirim dengan dtype salah → MlflowException schema enforcement.
+_INT32_COLUMNS = {"month", "day_of_year"}
+_INT64_COLUMNS = {
+    "hotspot_count", "n_daytime", "n_nighttime", "n_confidence_high",
+    "days_since_rain",
+}
+
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -307,6 +318,18 @@ async def predict(payload: PredictRequest) -> PredictResponse:
         # Defensive: kalau ada drift antara schema & FEATURE_COLUMNS.
         LOG.error("Feature mapping error: %s", e)
         raise HTTPException(status_code=500, detail="Internal feature mapping error") from e
+
+    # Cast dtype eksplisit agar match dengan model signature (training-time).
+    # MLflow schema enforcement strict: int32 (month, day_of_year) vs int64
+    # (counter columns) vs float64 (rest). Default pandas inference setelah
+    # build dari mixed list akan upcast semua jadi float64 — kita override.
+    for col in FEATURE_COLUMNS:
+        if col in _INT32_COLUMNS:
+            df[col] = df[col].astype("int32")
+        elif col in _INT64_COLUMNS:
+            df[col] = df[col].astype("int64")
+        else:
+            df[col] = df[col].astype("float64")
 
     try:
         pred = _STATE["model"].predict(df)
