@@ -1,28 +1,34 @@
 # =============================================================================
-# FireGuard — Docker Compose orchestration (LK09)
+# FireGuard — Docker Compose orchestration (LK09 + LK10)
 # =============================================================================
-# Dua layanan:
-#   1. mlflow-server  : MLflow Tracking + Model Registry (sqlite backend)
-#   2. api-service    : FastAPI inference yang load model dari mlflow-server
+# Dua service (4 container total dengan replicas):
+#   1. mlflow-server         : MLflow Tracking + Model Registry (sqlite backend)
+#   2. mlflow-model-server   : MLflow native serving (REPLICATED x3, LK10)
+#                              Built via `mlflow models build-docker`
 #
 # Network:
 #   fireguard-net (custom bridge) — service discovery via nama service
-#   ("mlflow-server" resolvable dari "api-service" tanpa expose ke host)
 #
 # Volumes (named):
 #   mlflow-db        — sqlite database (metadata: experiments, runs, registry)
 #   mlflow-artifacts — model artifacts (.pkl, model.yaml, dll)
 #
 # Quick start:
+#   # Pre-step: build MLflow model image (sekali saja, di Codespace)
+#   export MLFLOW_TRACKING_URI=http://localhost:5000
+#   mlflow models build-docker \
+#     --model-uri "models:/fireguard-regressor/Production" \
+#     --name fireguard/mlflow-model-server:1.0 \
+#     --env-manager local
+#
+#   # Lalu jalankan stack
 #   docker compose up -d
-#   docker compose ps                  # cek status (semua harus healthy)
-#   docker compose logs -f api-service # ikuti log
-#   docker compose down                # stop (volumes tetap)
-#   docker compose down -v             # stop + hapus volumes (data hilang)
+#   docker compose ps                  # cek status (4 container, semua healthy)
+#
+# Dynamic scaling (LK10):
+#   docker compose up -d --scale mlflow-model-server=5    # 5 replicas
+#   docker compose up -d --scale mlflow-model-server=1    # back to 1
 # =============================================================================
-
-# Catatan: kunci `version:` sengaja dihilangkan — Compose v2 sudah deprecated key
-# tersebut. Compose otomatis pakai schema terbaru.
 
 services:
   # ---------------------------------------------------------------------------
@@ -38,8 +44,6 @@ services:
     networks:
       - fireguard-net
     ports:
-      # Expose ke host supaya bisa buka UI di http://localhost:5000.
-      # Hapus blok ini kalau hanya butuh internal access dari api-service.
       - "5000:5000"
     volumes:
       - mlflow-db:/mlflow/db
@@ -50,64 +54,61 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    # Memory leak guard: kasih hard limit supaya container tidak balloon ke
-    # seluruh RAM host kalau ada bug di MLflow process.
     deploy:
       resources:
         limits:
           memory: 1g
           cpus: "1.0"
-    # Hardening
     security_opt:
       - no-new-privileges:true
-    read_only: false   # MLflow butuh tulis ke /tmp dan volume; bukan readonly
+    read_only: false
 
   # ---------------------------------------------------------------------------
-  # api-service — FastAPI inference
+  # mlflow-model-server — MLflow native serving (LK10)
   # ---------------------------------------------------------------------------
-  api-service:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    image: fireguard/api-service:1.0
-    container_name: fireguard-api
+  # Image dibuat dengan:
+  #   mlflow models build-docker \
+  #     --model-uri "models:/fireguard-regressor/Production" \
+  #     --name fireguard/mlflow-model-server:1.0 \
+  #     --env-manager local
+  #
+  # Endpoint: POST /invocations (MLflow native, BUKAN /predict)
+  # Input format: {"dataframe_split": {"columns": [...], "data": [[...]]}}
+  # Output format: {"predictions": [...]}
+  #
+  # CATATAN PENTING tentang replicas:
+  #   - JANGAN set container_name (konflik dengan multiple replicas)
+  #   - Port range "8010-8012:8080" → 3 host ports ke port 8080 di tiap container
+  #   - Tiap replica naming otomatis: <project>_mlflow-model-server_1/2/3
+  # ---------------------------------------------------------------------------
+  mlflow-model-server:
+    image: fireguard/mlflow-model-server:1.0
     restart: unless-stopped
     networks:
       - fireguard-net
     ports:
-      # Expose ke host — client (curl/Postman/dashboard) hit di sini.
-      - "8000:8000"
-    environment:
-      # Service discovery: pakai nama service `mlflow-server`, BUKAN localhost.
-      # Compose default DNS me-resolve nama service ke IP container.
-      MLFLOW_TRACKING_URI: "http://mlflow-server:5000"
-      FIREGUARD_MODEL_NAME: "fireguard-regressor"
-      FIREGUARD_MODEL_STAGE: "Production"
-      LOG_LEVEL: "INFO"
-      # Jangan log credential di prod — env vars otomatis di-mask oleh Compose
-      # selama tidak di-echo manual.
+      - "8010-8012:8080"
     depends_on:
       mlflow-server:
-        # Tunggu mlflow-server HEALTHY (bukan sekedar STARTED) sebelum start.
-        # Ini mencegah race condition di startup (api gagal connect → exit).
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8080/ping"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
     deploy:
+      # ── LK10 KEY REQUIREMENT: 3 replicas ─────────────────────────────────
+      replicas: 3
       resources:
         limits:
-          memory: 1500m
-          cpus: "1.5"
+          memory: 800m
+          cpus: "0.5"
     security_opt:
       - no-new-privileges:true
 
 # ---------------------------------------------------------------------------
-# Custom bridge network — terisolasi dari default bridge, service discovery
-# via DNS internal Compose.
+# Custom bridge network — service discovery via DNS internal Compose
 # ---------------------------------------------------------------------------
 networks:
   fireguard-net:

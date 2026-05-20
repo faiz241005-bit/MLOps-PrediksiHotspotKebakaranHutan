@@ -272,59 +272,117 @@ Detail siklus hidup model di [`docs/LK07_REGISTRY_GUIDE.md`](docs/LK07_REGISTRY_
 ## 3d. Cara Menjalankan dengan Docker Compose
 
 Stack penuh dapat dijalankan dengan **satu perintah** menggunakan Docker
-Compose. Compose akan men-orchestrate dua container:
+Compose. Compose akan men-orchestrate dua service:
 
-| Service | Port | Peran |
-|---|---|---|
-| `mlflow-server` | 5000 | Tracking + Model Registry (sqlite backend, filesystem artifact store) |
-| `api-service`   | 8000 | FastAPI inference (`/predict`, `/health`, `/model-info`) |
+| Service | Port | Replicas | Peran |
+|---|---|---|---|
+| `mlflow-server` | 5000 | 1 | Tracking + Model Registry (sqlite backend, filesystem artifact store) |
+| `mlflow-model-server`   | 8010-8012 | **3** | MLflow native serving via `/invocations` (horizontal scaling LK10) |
 
 ### 3d.1 Prasyarat
 
 - Docker Engine ≥ 24 + Docker Compose v2 (sudah include di Codespaces)
+- Image `fireguard/mlflow-model-server:1.0` sudah di-build (lihat 3d.2 di bawah)
 
-### 3d.2 Build & Run
+### 3d.2 Build MLflow Model Image (Sekali Saja)
+
+Image untuk model serving dibuat otomatis dari MLflow Registry — tidak butuh
+Dockerfile manual:
 
 ```bash
-docker compose up -d --build
+# Pastikan mlflow-server jalan dulu (untuk source model)
+docker compose up -d mlflow-server
+sleep 30
+
+# Build image otomatis dari model di Registry stage Production
+export MLFLOW_TRACKING_URI=http://localhost:5000
+mlflow models build-docker \
+  --model-uri "models:/fireguard-regressor/Production" \
+  --name fireguard/mlflow-model-server:1.0 \
+  --env-manager local
 ```
 
-Tunggu ~30–60 detik sampai kedua container `healthy`. Cek status:
+⏱️ **~5-15 menit** (download deps + build layers).
+
+### 3d.3 Run Full Stack
 
 ```bash
+docker compose up -d
+sleep 60   # tunggu semua replica healthy
 docker compose ps
 ```
 
-Output diharapkan:
+Output diharapkan (4 container total — 1 mlflow-server + 3 replicas):
 ```
-NAME                IMAGE                          STATUS              PORTS
-fireguard-mlflow    fireguard/mlflow-server:1.0    Up (healthy)        0.0.0.0:5000->5000/tcp
-fireguard-api       fireguard/api-service:1.0      Up (healthy)        0.0.0.0:8000->8000/tcp
+NAME                                            IMAGE                                  STATUS
+fireguard-mlflow                                fireguard/mlflow-server:1.0            Up (healthy)
+mlops-fireguard-mlflow-model-server-1           fireguard/mlflow-model-server:1.0      Up (healthy)
+mlops-fireguard-mlflow-model-server-2           fireguard/mlflow-model-server:1.0      Up (healthy)
+mlops-fireguard-mlflow-model-server-3           fireguard/mlflow-model-server:1.0      Up (healthy)
 ```
 
-### 3d.3 Verifikasi
+### 3d.4 Akses Endpoint API
+
+**Cara MLflow native:** kirim DataFrame format `dataframe_split`:
 
 ```bash
-curl http://localhost:8000/health
-# {"status":"ok","ready":true,"uptime_sec":...}
+# Ke replica 1 (port 8010)
+curl -X POST http://localhost:8010/invocations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataframe_split": {
+      "columns": ["hotspot_count", "frp_mean", ...],
+      "data": [[1323, 50.0, ...]]
+    }
+  }'
 
-curl http://localhost:8000/model-info
-# {"name":"fireguard-regressor","version":"...","stage":"Production",...}
+# Response: {"predictions": [323.531]}
 ```
+
+Untuk demo balanced antar replicas, ganti port: `8010`, `8011`, atau `8012`.
+
+Health endpoint: `curl http://localhost:8010/ping` (return string kosong + status 200).
 
 Buka MLflow UI di browser: <http://localhost:5000>.
 
-### 3d.4 Lifecycle
+### 3d.5 Dynamic Scaling (LK10)
+
+Tambah replicas dinamis tanpa modify YAML:
 
 ```bash
-docker compose logs -f api-service    # follow logs satu service
-docker compose restart api-service    # restart kalau perlu reload model
-docker compose down                   # stop (volumes tetap)
-docker compose down -v                # stop + hapus volumes (data hilang)
+# Scale up ke 5 replicas
+docker compose up -d --scale mlflow-model-server=5
+
+# Scale down ke 1 replica
+docker compose up -d --scale mlflow-model-server=1
+
+# Verify
+docker compose ps
 ```
 
-Detail lengkap (network, named volume, healthcheck, troubleshooting, seeding
-registry) ada di [`docs/LK09_DOCKER_GUIDE.md`](docs/LK09_DOCKER_GUIDE.md).
+> **Catatan port:** Default port range di YAML `8010-8012` cuma cover 3 replicas. Untuk 5 replicas, edit YAML jadi `8010-8014:8080`, atau gunakan reverse proxy (nginx) di depan untuk load balancing dengan 1 port external.
+
+### 3d.6 End-to-End Demo Script
+
+```bash
+# Predict tomorrow per provinsi via /invocations (skip fetch untuk cepat)
+python -m src.scripts.predict_tomorrow --skip-fetch
+
+# Atau dengan fresh data dari NASA FIRMS
+python -m src.scripts.predict_tomorrow
+```
+
+### 3d.7 Lifecycle
+
+```bash
+docker compose logs -f mlflow-model-server   # follow logs (semua replicas)
+docker compose restart mlflow-model-server   # restart semua replicas
+docker compose down                          # stop (volumes tetap)
+docker compose down -v                       # stop + hapus volumes (data hilang)
+```
+
+Detail lengkap LK09 (network, volume, healthcheck) di [`docs/LK09_DOCKER_GUIDE.md`](docs/LK09_DOCKER_GUIDE.md).
+Detail LK10 (MLflow serving, replicas, scaling) di [`docs/LK10_SERVING_GUIDE.md`](docs/LK10_SERVING_GUIDE.md).
 
 ---
 

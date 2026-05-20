@@ -1,29 +1,42 @@
 """
-Predict Tomorrow — Demo end-to-end FireGuard prediction per provinsi.
+Predict Tomorrow — Demo end-to-end FireGuard prediction per provinsi (LK10).
+
+LK10 update: pakai MLflow native endpoint /invocations (bukan /predict custom).
+Default API URL ke salah satu replica MLflow model server (port 8010).
 
 Workflow:
-    1. Fetch real data terbaru (FIRMS NRT last 7 days + Open-Meteo Archive 14 days)
+    1. Fetch real data terbaru (FIRMS NRT 7 days + Open-Meteo Archive 7 days)
     2. Run preprocess (join FIRMS + weather)
     3. Run build_features (rolling, lag, target)
     4. For each provinsi, ambil row latest available
-    5. Call FastAPI /predict (api-service di Docker Compose)
-    6. Print hasil dalam tabel rapi
+    5. POST /invocations ke MLflow native serving (format dataframe_split)
+    6. Derive risk_level di client (MLflow native cuma return raw count)
+    7. Print hasil dalam tabel rapi
 
 Usage:
     # Run dengan fetch fresh (3-5 menit, butuh NASA_FIRMS_API_KEY di .env)
     python -m src.scripts.predict_tomorrow
 
-    # Skip fetch — pakai data existing di data/features/ (cepat, untuk demo)
+    # Skip fetch — pakai existing data
     python -m src.scripts.predict_tomorrow --skip-fetch
 
-    # Custom api URL (default: http://localhost:8000)
-    python -m src.scripts.predict_tomorrow --api-url http://localhost:8000
+    # Custom replica URL (untuk uji load balancing antar replicas)
+    python -m src.scripts.predict_tomorrow --api-url http://localhost:8011
+
+MLflow native endpoint format:
+    POST /invocations
+    Body: {"dataframe_split": {"columns": [...], "data": [[...]]}}
+    Response: {"predictions": [323.531]}
+
+Compare dengan custom FastAPI (LK09):
+    POST /predict
+    Body: {"hotspot_count": 1323, "frp_mean": 50.0, ...}
+    Response: {"hotspot_count_tomorrow": 323, "risk_level": 2, ...}
 
 Security & memory:
     - Tidak ada credential di-log
     - API timeout 10 detik per request
     - Stream-write per subprocess call (tidak hold output di RAM)
-    - Pakai existing src/data dan src/features modules — single source of truth
 """
 from __future__ import annotations
 
@@ -43,7 +56,6 @@ import requests
 LOG = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Province display names — match dengan training data
 _PROVINCE_DISPLAY = {
     "riau":    "Riau",
     "kalteng": "Kalimantan Tengah",
@@ -52,7 +64,7 @@ _PROVINCE_DISPLAY = {
     "jambi":   "Jambi",
 }
 
-# Features yang dikirim ke /predict (27 fitur, sesuai schema FastAPI)
+# Features yang dikirim ke /invocations (urutan match dengan model signature)
 _FEATURE_COLUMNS = [
     "hotspot_count", "frp_mean", "frp_max", "frp_sum",
     "n_daytime", "n_nighttime", "n_confidence_high",
@@ -66,7 +78,7 @@ _FEATURE_COLUMNS = [
     "days_since_rain",
 ]
 
-# Kolom yang harus di-cast ke int (sesuai signature model)
+# Kolom yang harus int (match dengan model signature)
 _INT32_COLS = {"month", "day_of_year"}
 _INT64_COLS = {
     "hotspot_count", "n_daytime", "n_nighttime", "n_confidence_high",
@@ -78,7 +90,6 @@ _INT64_COLS = {
 # Pipeline subprocess wrappers
 # ---------------------------------------------------------------------------
 def _run_step(cmd: list[str], description: str) -> bool:
-    """Run subprocess + log progress. Return True kalau sukses."""
     LOG.info("▶ %s", description)
     try:
         result = subprocess.run(
@@ -101,15 +112,12 @@ def _run_step(cmd: list[str], description: str) -> bool:
 
 
 def fetch_latest_data(days_back: int = 7) -> bool:
-    """Fetch FIRMS NRT + Open-Meteo Archive untuk last N days."""
     today = date.today()
-    # Open-Meteo Archive punya lag ~5 hari; pakai cutoff hari ini - 2
     end_date = today - timedelta(days=2)
     start_date = end_date - timedelta(days=days_back)
 
     LOG.info("Fetch window: %s → %s (%d hari)", start_date, end_date, days_back + 1)
 
-    # Bulk fetch FIRMS + weather sekaligus
     return _run_step(
         [
             sys.executable, "-m", "src.data.bulk_fetch",
@@ -137,10 +145,9 @@ def run_build_features() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Predict
+# MLflow native /invocations call
 # ---------------------------------------------------------------------------
 def load_latest_features() -> Optional[pd.DataFrame]:
-    """Load training_dataset_*.parquet terbaru di data/features/."""
     features_dir = _PROJECT_ROOT / "data" / "features"
     files = sorted(features_dir.glob("training_dataset_*.parquet"))
     if not files:
@@ -148,66 +155,98 @@ def load_latest_features() -> Optional[pd.DataFrame]:
         return None
     latest = files[-1]
     LOG.info("Pakai features file: %s", latest.name)
-    df = pd.read_parquet(latest)
-    return df
+    return pd.read_parquet(latest)
 
 
 def get_latest_row_per_province(df: pd.DataFrame) -> dict[str, pd.Series]:
-    """Untuk tiap provinsi, ambil row dengan date terbaru yang ada hotspot."""
     result: dict[str, pd.Series] = {}
     for prov_id in df["province_id"].unique():
         sub = df[df["province_id"] == prov_id].sort_values("date")
-        if sub.empty:
-            continue
-        # Ambil row TERAKHIR (latest date) per provinsi
-        result[prov_id] = sub.iloc[-1]
+        if not sub.empty:
+            result[prov_id] = sub.iloc[-1]
     return result
 
 
-def features_to_payload(row: pd.Series) -> dict[str, Any]:
-    """Convert pandas Series jadi dict siap-kirim ke /predict (dengan type casting)."""
-    payload: dict[str, Any] = {}
+def features_to_mlflow_payload(row: pd.Series) -> dict[str, Any]:
+    """
+    Convert row jadi MLflow native format `dataframe_split`.
+
+    Format:
+        {
+            "dataframe_split": {
+                "columns": ["hotspot_count", "frp_mean", ...],
+                "data": [[1323, 50.0, ...]]
+            }
+        }
+    """
+    values: list[Any] = []
     for col in _FEATURE_COLUMNS:
-        if col not in row.index:
-            LOG.warning("Missing feature %s di row, default 0", col)
-            payload[col] = 0
-            continue
-        v = row[col]
+        v = row.get(col, 0)
         if pd.isna(v):
             v = 0
         # Cast sesuai expected type model
         if col in _INT32_COLS or col in _INT64_COLS:
-            payload[col] = int(v)
+            values.append(int(v))
         else:
-            payload[col] = float(v)
-    return payload
+            values.append(float(v))
+
+    return {
+        "dataframe_split": {
+            "columns": _FEATURE_COLUMNS,
+            "data": [values],
+        }
+    }
 
 
-def call_predict(api_url: str, payload: dict[str, Any], timeout: int = 10) -> Optional[dict]:
-    """POST /predict ke api-service. Return JSON response atau None kalau error."""
+def call_invocations(api_url: str, payload: dict[str, Any], timeout: int = 10) -> Optional[float]:
+    """
+    POST /invocations ke MLflow native serving.
+    Return prediction value (float) atau None kalau error.
+    """
     try:
-        r = requests.post(f"{api_url}/predict", json=payload, timeout=timeout)
+        r = requests.post(
+            f"{api_url}/invocations",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
         if not r.ok:
             LOG.error("HTTP %s: %s", r.status_code, r.text[:200])
             return None
-        return r.json()
+        body = r.json()
+        # MLflow native return {"predictions": [N]}
+        preds = body.get("predictions")
+        if not preds:
+            LOG.error("Response tidak punya 'predictions': %s", body)
+            return None
+        return float(preds[0])
     except Exception as e:  # noqa: BLE001
         LOG.error("Request failed: %s", type(e).__name__)
         return None
 
 
+def derive_risk_level(count: float) -> tuple[int, str]:
+    """
+    Derive risk_level + label dari raw count.
+    Logika sama dengan src/features/build_features.py.
+    """
+    if count <= 0:
+        return 0, "Aman"
+    if count <= 10:
+        return 1, "Waspada"
+    return 2, "Bahaya"
+
+
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
-def print_header(api_url: str, model_info: Optional[dict]) -> None:
+def print_header(api_url: str) -> None:
     print()
     print("=" * 70)
     print("🔥 FireGuard — Prediksi Hotspot Besok per Provinsi")
     print("=" * 70)
-    print(f"  API endpoint     : {api_url}")
-    if model_info:
-        print(f"  Model            : {model_info.get('name')} v{model_info.get('version')} "
-              f"({model_info.get('stage')})")
+    print(f"  Endpoint         : {api_url}/invocations")
+    print(f"  Server           : MLflow native (LK10, replicas:3)")
     print(f"  Waktu eksekusi   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S WIB')}")
     print("=" * 70)
     print()
@@ -218,7 +257,6 @@ def print_results(results: dict[str, dict]) -> None:
         print("\n⚠️  Tidak ada hasil prediksi.\n")
         return
 
-    # Header tabel
     print(f"{'Provinsi':<22} {'Today':>10} {'Tomorrow':>12} {'Risk':<12}")
     print("-" * 70)
 
@@ -232,13 +270,12 @@ def print_results(results: dict[str, dict]) -> None:
         if pred is None:
             print(f"{prov_name:<22} {today_count:>10} {'—':>12} {'❌ ERROR':<12}")
             continue
-        tomorrow = pred.get("hotspot_count_tomorrow", 0)
-        risk_label = pred.get("risk_label", "—")
+        risk_lvl, risk_label = derive_risk_level(pred)
         risk_emoji = {"Aman": "🟢", "Waspada": "🟡", "Bahaya": "🔴"}.get(risk_label, "⚪")
-        print(f"{prov_name:<22} {today_count:>10} {tomorrow:>12.1f} "
+        print(f"{prov_name:<22} {today_count:>10} {pred:>12.1f} "
               f"{risk_emoji} {risk_label:<10}")
         total_today += today_count
-        total_tomorrow += tomorrow
+        total_tomorrow += pred
 
     print("-" * 70)
     print(f"{'TOTAL Indonesia':<22} {total_today:>10} {total_tomorrow:>12.1f}")
@@ -250,10 +287,14 @@ def print_results(results: dict[str, dict]) -> None:
 # ---------------------------------------------------------------------------
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Predict tomorrow's hotspots per province (demo end-to-end)"
+        description="Predict tomorrow's hotspots per province via MLflow native /invocations (LK10)"
     )
-    parser.add_argument("--api-url", default=os.getenv("FIREGUARD_API_URL", "http://localhost:8000"),
-                        help="FastAPI api-service URL (default: http://localhost:8000)")
+    parser.add_argument(
+        "--api-url",
+        default=os.getenv("FIREGUARD_API_URL", "http://localhost:8010"),
+        help="MLflow model server URL (default replica 1: http://localhost:8010). "
+             "Try 8011 atau 8012 untuk demo load balancing antar replicas.",
+    )
     parser.add_argument("--skip-fetch", action="store_true",
                         help="Skip data fetch — pakai existing data/features/")
     parser.add_argument("--days-back", type=int, default=7,
@@ -273,15 +314,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             LOG.error("Data fetch gagal — coba --skip-fetch kalau mau pakai data lama")
             return 1
         if not run_preprocess():
-            LOG.error("Preprocess gagal")
             return 1
         if not run_build_features():
-            LOG.error("Build features gagal")
             return 1
     else:
         LOG.info("Skip fetch — pakai data existing di data/features/")
 
-    # Step 4: Load features + ambil latest row per provinsi
+    # Step 4: Load features
     df = load_latest_features()
     if df is None or df.empty:
         LOG.error("Features dataset kosong / tidak ada")
@@ -290,48 +329,48 @@ def main(argv: Optional[list[str]] = None) -> int:
     latest_rows = get_latest_row_per_province(df)
     LOG.info("Provinces dengan data: %s", list(latest_rows.keys()))
 
-    # Step 5: Cek api-service reachable
+    # Step 5: Health check MLflow model server
     try:
-        info_resp = requests.get(f"{args.api_url}/model-info", timeout=5)
-        model_info = info_resp.json() if info_resp.ok else None
-        if not model_info or not model_info.get("ready"):
-            LOG.error("api-service tidak reachable atau model belum loaded di %s", args.api_url)
-            LOG.error("Pastikan: docker compose ps → fireguard-api status (healthy)")
+        r = requests.get(f"{args.api_url}/ping", timeout=5)
+        if not r.ok:
+            LOG.error("MLflow model server tidak respon /ping di %s", args.api_url)
+            LOG.error("Pastikan: docker compose ps → mlflow-model-server-X (healthy)")
             return 1
     except Exception as e:  # noqa: BLE001
-        LOG.error("Gagal connect ke api-service: %s", type(e).__name__)
+        LOG.error("Gagal connect ke %s: %s", args.api_url, type(e).__name__)
         return 1
 
-    print_header(args.api_url, model_info)
+    print_header(args.api_url)
 
-    # Step 6: Loop predict per provinsi
+    # Step 6: Predict per provinsi via /invocations
     results: dict[str, dict] = {}
     for prov_id, row in latest_rows.items():
-        payload = features_to_payload(row)
+        payload = features_to_mlflow_payload(row)
         today_count = int(row.get("hotspot_count", 0))
-        LOG.info("Predict %s (today_count=%d, date=%s)...",
-                 prov_id, today_count, row.get("date"))
-        pred = call_predict(args.api_url, payload)
+        LOG.info("Predict %s (today_count=%d)...", prov_id, today_count)
+        pred = call_invocations(args.api_url, payload)
         results[prov_id] = {
             "today_count": today_count,
             "prediction": pred,
             "date_today": row.get("date"),
         }
 
-    # Step 7: Tampilkan hasil
+    # Step 7: Print + save JSON
     print_results(results)
 
-    # Optional: write JSON output untuk consumption lain
     output_file = _PROJECT_ROOT / "data" / "predictions_latest.json"
     output_data = {
         "executed_at": datetime.now().isoformat(),
         "api_url": args.api_url,
-        "model": model_info,
+        "endpoint": "/invocations",
+        "server_type": "MLflow native (LK10, replicas:3)",
         "results": {
             prov: {
                 "today_count": r["today_count"],
                 "date_today": str(r["date_today"]),
-                "prediction": r["prediction"],
+                "prediction_count": r["prediction"],
+                "risk_level": derive_risk_level(r["prediction"])[0] if r["prediction"] is not None else None,
+                "risk_label": derive_risk_level(r["prediction"])[1] if r["prediction"] is not None else None,
             } for prov, r in results.items()
         },
     }
