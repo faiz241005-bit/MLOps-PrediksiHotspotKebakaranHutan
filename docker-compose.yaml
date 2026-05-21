@@ -107,6 +107,46 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ---------------------------------------------------------------------------
+  # streamlit-dashboard — Folium map UI dengan REST API /invocations
+  # ---------------------------------------------------------------------------
+  # Connect ke mlflow-model-server via service DNS (round-robin antar replicas).
+  # Mount data/raw/firms read-only untuk peta hotspot historis.
+  # ---------------------------------------------------------------------------
+  streamlit-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: fireguard/streamlit-dashboard:1.0
+    container_name: fireguard-dashboard
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      - "8501:8501"
+    environment:
+      # Service discovery: pakai nama service "mlflow-model-server".
+      # Docker Compose DNS otomatis round-robin antar 3 replicas.
+      FIREGUARD_API_URL: "http://mlflow-model-server:8080"
+    volumes:
+      - ./data/raw/firms:/app/data/raw/firms:ro
+    depends_on:
+      mlflow-model-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    security_opt:
+      - no-new-privileges:true
+
 # ---------------------------------------------------------------------------
 # Custom bridge network — service discovery via DNS internal Compose
 # ---------------------------------------------------------------------------
