@@ -92,11 +92,13 @@ services:
       mlflow-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8080/ping"]
+      # Pakai Python urllib karena image MLflow build-docker TIDAK punya curl.
+      # /ping endpoint return empty body status 200 saat model siap.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8080/ping', timeout=3).read(); sys.exit(0)"]
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s    # MLflow native + LightGBM load butuh ~30-60 detik
     deploy:
       # ── LK10 KEY REQUIREMENT: 3 replicas ─────────────────────────────────
       replicas: 3
