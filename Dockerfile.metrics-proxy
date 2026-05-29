@@ -39,15 +39,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user (uid 10004, terpisah dari mlflow=10001, dashboard=10003)
-RUN groupadd --system --gid 10004 proxy && \
-    useradd  --system --uid 10004 --gid proxy --home-dir /app --shell /sbin/nologin proxy
+# Catatan: nama "proxy" konflik dengan default Debian user, jadi pakai "fireguard"
+RUN groupadd --system --gid 10004 fireguard && \
+    useradd  --system --uid 10004 --gid fireguard --home-dir /app --shell /sbin/nologin fireguard
 
 COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
-COPY --chown=proxy:proxy src/metrics_proxy/ /app/src/metrics_proxy/
+COPY --chown=fireguard:fireguard src/metrics_proxy/ /app/src/metrics_proxy/
 
-USER proxy
+USER fireguard
 
 EXPOSE 9000
 
