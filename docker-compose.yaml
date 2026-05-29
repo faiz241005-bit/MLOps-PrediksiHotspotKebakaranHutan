@@ -1,33 +1,44 @@
 # =============================================================================
-# FireGuard — Docker Compose orchestration (LK09 + LK10)
+# FireGuard — Docker Compose orchestration (LK09 + LK10 + LK11)
 # =============================================================================
-# Dua service (4 container total dengan replicas):
-#   1. mlflow-server         : MLflow Tracking + Model Registry (sqlite backend)
+# Service map (7 container saat replicas=3):
+#   1. mlflow-server         : MLflow Tracking + Model Registry (sqlite)
 #   2. mlflow-model-server   : MLflow native serving (REPLICATED x3, LK10)
-#                              Built via `mlflow models build-docker`
+#   3. streamlit-dashboard   : Folium UI (call proxy, BUKAN langsung ke MLflow)
+#   4. metrics-proxy         : FastAPI sidecar → expose /metrics (LK11)
+#   5. prometheus            : scrape metrics-proxy + cadvisor (LK11)
+#   6. grafana               : dashboard visualization (LK11)
+#   7. cadvisor              : container CPU/RAM exporter (LK11)
 #
 # Network:
 #   fireguard-net (custom bridge) — service discovery via nama service
 #
 # Volumes (named):
-#   mlflow-db        — sqlite database (metadata: experiments, runs, registry)
-#   mlflow-artifacts — model artifacts (.pkl, model.yaml, dll)
+#   mlflow-db        — sqlite database
+#   mlflow-artifacts — model artifacts
+#   prometheus-data  — TSDB metrics (15d retention)
+#   grafana-data     — dashboard config & user prefs
 #
 # Quick start:
-#   # Pre-step: build MLflow model image (sekali saja, di Codespace)
+#   # Pre-step: build MLflow model image (sekali saja)
 #   export MLFLOW_TRACKING_URI=http://localhost:5000
 #   mlflow models build-docker \
 #     --model-uri "models:/fireguard-regressor/Production" \
 #     --name fireguard/mlflow-model-server:1.0 \
 #     --env-manager local
 #
-#   # Lalu jalankan stack
 #   docker compose up -d
-#   docker compose ps                  # cek status (4 container, semua healthy)
+#   docker compose ps                  # cek status (7 container, semua healthy)
 #
 # Dynamic scaling (LK10):
-#   docker compose up -d --scale mlflow-model-server=5    # 5 replicas
-#   docker compose up -d --scale mlflow-model-server=1    # back to 1
+#   docker compose up -d --scale mlflow-model-server=5
+#
+# Akses UI:
+#   - MLflow      : http://localhost:5000
+#   - Streamlit   : http://localhost:8501
+#   - Grafana     : http://localhost:3000  (admin/admin — ganti di production!)
+#   - Prometheus  : http://localhost:9090
+#   - cAdvisor    : http://localhost:8085  (opsional, untuk debug)
 # =============================================================================
 
 services:
@@ -66,20 +77,9 @@ services:
   # ---------------------------------------------------------------------------
   # mlflow-model-server — MLflow native serving (LK10)
   # ---------------------------------------------------------------------------
-  # Image dibuat dengan:
-  #   mlflow models build-docker \
-  #     --model-uri "models:/fireguard-regressor/Production" \
-  #     --name fireguard/mlflow-model-server:1.0 \
-  #     --env-manager local
-  #
-  # Endpoint: POST /invocations (MLflow native, BUKAN /predict)
-  # Input format: {"dataframe_split": {"columns": [...], "data": [[...]]}}
-  # Output format: {"predictions": [...]}
-  #
-  # CATATAN PENTING tentang replicas:
-  #   - JANGAN set container_name (konflik dengan multiple replicas)
-  #   - Port range "8010-8012:8080" → 3 host ports ke port 8080 di tiap container
-  #   - Tiap replica naming otomatis: <project>_mlflow-model-server_1/2/3
+  # CATATAN: TIDAK di-expose ke host langsung untuk LK11. Akses melalui
+  # metrics-proxy. Tapi tetap kita expose ports 8010-8012 untuk backward
+  # compatibility (debugging & LK10 demo).
   # ---------------------------------------------------------------------------
   mlflow-model-server:
     image: fireguard/mlflow-model-server:1.0
@@ -92,15 +92,13 @@ services:
       mlflow-server:
         condition: service_healthy
     healthcheck:
-      # Pakai Python urllib karena image MLflow build-docker TIDAK punya curl.
-      # /ping endpoint return empty body status 200 saat model siap.
+      # Image MLflow tidak punya curl → pakai python urllib
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8080/ping', timeout=3).read(); sys.exit(0)"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 90s    # MLflow native + LightGBM load butuh ~30-60 detik
+      start_period: 90s
     deploy:
-      # ── LK10 KEY REQUIREMENT: 3 replicas ─────────────────────────────────
       replicas: 3
       resources:
         limits:
@@ -110,10 +108,54 @@ services:
       - no-new-privileges:true
 
   # ---------------------------------------------------------------------------
-  # streamlit-dashboard — Folium map UI dengan REST API /invocations
+  # metrics-proxy — FastAPI sidecar (LK11)
   # ---------------------------------------------------------------------------
-  # Connect ke mlflow-model-server via service DNS (round-robin antar replicas).
-  # Mount data/raw/firms read-only untuk peta hotspot historis.
+  # Expose:
+  #   /invocations  → forward ke mlflow-model-server (Docker DNS round-robin)
+  #   /ping, /health
+  #   /metrics      → Prometheus exposition (latency, RPS, prediction value)
+  # ---------------------------------------------------------------------------
+  metrics-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.metrics-proxy
+    image: fireguard/metrics-proxy:1.0
+    container_name: fireguard-metrics-proxy
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      - "9000:9000"
+    environment:
+      MLFLOW_UPSTREAM_URL: "http://mlflow-model-server:8080"
+      UPSTREAM_TIMEOUT_S: "15"
+      MAX_BODY_BYTES: "10485760"   # 10 MiB
+      LOG_LEVEL: "INFO"
+    depends_on:
+      mlflow-model-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+
+  # ---------------------------------------------------------------------------
+  # streamlit-dashboard — Folium map UI
+  # ---------------------------------------------------------------------------
+  # Connect ke metrics-proxy (bukan langsung ke mlflow-model-server) supaya
+  # tiap call tercatat di Prometheus.
   # ---------------------------------------------------------------------------
   streamlit-dashboard:
     build:
@@ -127,13 +169,12 @@ services:
     ports:
       - "8501:8501"
     environment:
-      # Service discovery: pakai nama service "mlflow-model-server".
-      # Docker Compose DNS otomatis round-robin antar 3 replicas.
-      FIREGUARD_API_URL: "http://mlflow-model-server:8080"
+      # LK11: pakai metrics-proxy (bukan langsung mlflow-model-server)
+      FIREGUARD_API_URL: "http://metrics-proxy:9000"
     volumes:
       - ./data/raw/firms:/app/data/raw/firms:ro
     depends_on:
-      mlflow-model-server:
+      metrics-proxy:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8501/_stcore/health"]
@@ -149,8 +190,137 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ---------------------------------------------------------------------------
+  # prometheus — TSDB + scraper (LK11)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: fireguard-prometheus
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"          # /-/reload via HTTP POST
+    depends_on:
+      metrics-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # grafana — dashboard UI (LK11)
+  # ---------------------------------------------------------------------------
+  # Default credentials: admin/admin (sesuai permintaan).
+  # SECURITY NOTE: GANTI di production via env GF_SECURITY_ADMIN_PASSWORD
+  # atau --env-file. Default creds = risk besar kalau diakses publik.
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: fireguard-grafana
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      - "3000:3000"
+    environment:
+      # ⚠️ Default admin/admin — GANTI sebelum deploy production
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      # Anonymous viewer off (tetap perlu login)
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Disable signup public
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Reduce noise
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # cadvisor — container resource exporter (LK11)
+  # ---------------------------------------------------------------------------
+  # Membaca cgroups + Docker socket → expose CPU/RAM/IO per container.
+  # Read-only access ke Docker socket (untuk metadata discovery).
+  # ---------------------------------------------------------------------------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: fireguard-cadvisor
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      - "8085:8080"
+    privileged: false
+    # cAdvisor butuh akses cgroups & docker socket (read-only)
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - "--housekeeping_interval=10s"
+      - "--docker_only=true"          # hanya monitor container, bukan host
+      - "--store_container_labels=false"  # reduce label cardinality
+    devices:
+      - /dev/kmsg
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    # NOTE: cAdvisor butuh akses ke /proc dan /sys host → no-new-privileges
+    # tetap aman karena dia tidak escalate, hanya read.
+    security_opt:
+      - no-new-privileges:true
+
 # ---------------------------------------------------------------------------
-# Custom bridge network — service discovery via DNS internal Compose
+# Custom bridge network
 # ---------------------------------------------------------------------------
 networks:
   fireguard-net:
@@ -158,10 +328,14 @@ networks:
     driver: bridge
 
 # ---------------------------------------------------------------------------
-# Named volumes — persisten antar `docker compose down/up` (kecuali `-v`)
+# Named volumes — persisten antar `docker compose down/up`
 # ---------------------------------------------------------------------------
 volumes:
   mlflow-db:
     name: fireguard-mlflow-db
   mlflow-artifacts:
     name: fireguard-mlflow-artifacts
+  prometheus-data:
+    name: fireguard-prometheus-data
+  grafana-data:
+    name: fireguard-grafana-data

@@ -1,0 +1,67 @@
+# =============================================================================
+# FireGuard Prometheus config (LK11)
+# =============================================================================
+# Scrape target:
+#   1. metrics-proxy : application metrics (latensi, RPS, prediction value)
+#                      → endpoint /metrics
+#   2. cadvisor       : container resource metrics (CPU, RAM, network, IO)
+#                      → endpoint /metrics (otomatis cAdvisor)
+#   3. prometheus     : self-monitoring (best practice)
+#
+# Interval: 15s (production-grade default — balance granularitas vs storage).
+#           Default Prometheus & dipakai mayoritas SRE setup.
+#
+# Retention default: 15 hari (lihat docker-compose.yaml flag --storage.tsdb.retention.time)
+# =============================================================================
+
+global:
+  scrape_interval: 15s          # seberapa sering Prometheus pull metric
+  scrape_timeout: 10s           # batas waktu satu kali scrape (< interval)
+  evaluation_interval: 15s      # interval evaluasi recording/alerting rules
+  external_labels:
+    monitor: "fireguard-lk11"
+    env: "dev"
+
+# ---------------------------------------------------------------------------
+# Scrape jobs
+# ---------------------------------------------------------------------------
+scrape_configs:
+
+  # --- App metrics: metrics-proxy (LK11) -----------------------------------
+  - job_name: "mlflow-metrics-proxy"
+    metrics_path: "/metrics"
+    scheme: "http"
+    static_configs:
+      - targets: ["metrics-proxy:9000"]
+        labels:
+          service: "mlflow-model-server"
+          tier: "ml-serving"
+
+  # --- Container resource metrics: cAdvisor --------------------------------
+  # cAdvisor expose /metrics yang mencakup CPU, memory, network, fs untuk
+  # SEMUA container di host (otomatis discover via /var/run/docker.sock).
+  - job_name: "cadvisor"
+    metrics_path: "/metrics"
+    scheme: "http"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          tier: "infra"
+
+  # --- Prometheus self-monitoring ------------------------------------------
+  # Best practice: Prometheus selalu scrape dirinya sendiri.
+  - job_name: "prometheus"
+    metrics_path: "/metrics"
+    scheme: "http"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          tier: "infra"
+
+# ---------------------------------------------------------------------------
+# Recording rules / alerting (opsional, tidak wajib untuk LK11)
+# ---------------------------------------------------------------------------
+# Untuk simplicity LK11 tidak pakai recording rules. Kalau perlu, bikin file
+# `monitoring/rules/*.yml` dan reference via:
+#   rule_files:
+#     - "/etc/prometheus/rules/*.yml"

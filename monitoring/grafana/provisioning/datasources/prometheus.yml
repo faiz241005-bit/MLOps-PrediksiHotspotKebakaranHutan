@@ -1,0 +1,23 @@
+# =============================================================================
+# Grafana datasource provisioning — auto-add Prometheus saat container start
+# =============================================================================
+# Tanpa file ini, user harus klik UI: Configuration → Data Sources → Add.
+# Dengan provisioning, datasource sudah siap pakai begitu Grafana up.
+# Doc: https://grafana.com/docs/grafana/latest/administration/provisioning/
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # URL Docker DNS internal — service "prometheus" di compose network
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      # Scrape interval di Prometheus = 15s → match di sini supaya query
+      # otomatis hitung rate() dengan window yang benar
+      timeInterval: "15s"

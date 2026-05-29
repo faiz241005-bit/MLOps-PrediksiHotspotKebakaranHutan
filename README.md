@@ -272,12 +272,17 @@ Detail siklus hidup model di [`docs/LK07_REGISTRY_GUIDE.md`](docs/LK07_REGISTRY_
 ## 3d. Cara Menjalankan dengan Docker Compose
 
 Stack penuh dapat dijalankan dengan **satu perintah** menggunakan Docker
-Compose. Compose akan men-orchestrate dua service:
+Compose. Saat semua service aktif, ada **7 container** (LK09 + LK10 + LK11):
 
 | Service | Port | Replicas | Peran |
 |---|---|---|---|
 | `mlflow-server` | 5000 | 1 | Tracking + Model Registry (sqlite backend, filesystem artifact store) |
-| `mlflow-model-server`   | 8010-8012 | **3** | MLflow native serving via `/invocations` (horizontal scaling LK10) |
+| `mlflow-model-server` | 8010-8012 | **3** | MLflow native serving via `/invocations` (horizontal scaling LK10) |
+| `streamlit-dashboard` | 8501 | 1 | Folium UI — call API via metrics-proxy |
+| `metrics-proxy` | 9000 | 1 | FastAPI sidecar → `/metrics` (LK11) |
+| `prometheus` | 9090 | 1 | TSDB scraper (LK11) |
+| `grafana` | 3000 | 1 | Dashboard UI (LK11) |
+| `cadvisor` | 8085 | 1 | Container resource exporter (LK11) |
 
 ### 3d.1 Prasyarat
 
@@ -383,6 +388,87 @@ docker compose down -v                       # stop + hapus volumes (data hilang
 
 Detail lengkap LK09 (network, volume, healthcheck) di [`docs/LK09_DOCKER_GUIDE.md`](docs/LK09_DOCKER_GUIDE.md).
 Detail LK10 (MLflow serving, replicas, scaling) di [`docs/LK10_SERVING_GUIDE.md`](docs/LK10_SERVING_GUIDE.md).
+
+---
+
+## 3e. Observability — Prometheus + Grafana (LK11)
+
+Tiga container baru di stack untuk monitoring production-grade:
+
+- **metrics-proxy** (FastAPI sidecar) — intercept `/invocations`, instrumentasi
+  latency, throughput, dan **prediction value distribution** (untuk drift
+  detection). Expose `/metrics` dalam format Prometheus.
+- **prometheus** — scrape metrics-proxy + cAdvisor tiap 15 detik. TSDB
+  retention 15 hari.
+- **grafana** — dashboard `FireGuard MLOps Observability (LK11)` auto-loaded
+  via provisioning. 10 panel: throughput, latency p50/p95/p99, error rate,
+  CPU/RAM per container, dan **heatmap distribusi prediksi** untuk drift.
+- **cadvisor** — exporter container resource metrics dari cgroups.
+
+### 3e.1 Akses UI
+
+| Service | URL | Credentials |
+|---|---|---|
+| Grafana | <http://localhost:3000> | `admin` / `admin` |
+| Prometheus | <http://localhost:9090> | — |
+| cAdvisor | <http://localhost:8085> | — |
+| metrics-proxy `/metrics` | <http://localhost:9000/metrics> | — |
+
+> ⚠️ **Security:** default Grafana password `admin/admin` hanya untuk demo.
+> Untuk production, set `GF_SECURITY_ADMIN_PASSWORD` dari secret manager.
+
+### 3e.2 Cek Prometheus Scraping
+
+```bash
+# Open: http://localhost:9090/targets
+# Semua 3 target harus UP:
+#   - mlflow-metrics-proxy
+#   - cadvisor
+#   - prometheus (self)
+```
+
+### 3e.3 Generate Beban Kerja (Demo)
+
+```bash
+# Default: 50 request, concurrency 5
+python -m src.scripts.load_test_lk11
+
+# Heavy: 500 request, 20 concurrent
+python -m src.scripts.load_test_lk11 --requests 500 --concurrency 20
+
+# Demo drift detection: 2 fase berbeda
+python -m src.scripts.load_test_lk11 --requests 100 --scenario low
+sleep 60
+python -m src.scripts.load_test_lk11 --requests 100 --scenario high
+# → Heatmap di Grafana akan shift ke nilai prediksi yang lebih besar
+```
+
+### 3e.4 Dashboard Panel — Apa yang Dimonitor
+
+| Panel | Metric | Insight |
+|---|---|---|
+| Throughput RPS | `rate(mlflow_requests_total)` | Beban request masuk |
+| Latency p50/p95/p99 | `histogram_quantile(...)` | SLA inference time |
+| Error Rate | rate 4xx+5xx ÷ rate total | Kesehatan service |
+| Request per Status | grouped by status code | Pola error/sukses |
+| CPU per Container | cAdvisor `container_cpu_usage_seconds_total` | Resource pressure |
+| RAM per Container | cAdvisor `container_memory_working_set_bytes` | Memory growth/leak |
+| **Prediction Heatmap** | `mlflow_prediction_value_bucket` | **Data drift detection** |
+| Prediction Quantiles | p50/p95 dari prediction value | Trend shift |
+
+### 3e.5 Deteksi Model Decay
+
+Dashboard ini memvisualisasikan **4 sinyal model decay** sekaligus:
+
+1. **Data drift** — heatmap prediksi shift dari baseline → input distribution
+   berubah (musim, demografi, dll).
+2. **Latency degradation** — p99 naik bertahap → model semakin lambat (ukuran
+   model bertambah, atau memory pressure).
+3. **Error rate creep** — 4xx muncul → schema mismatch dengan training data.
+4. **Memory leak** — RAM monoton naik tanpa decay → restart replica diperlukan.
+
+Detail lengkap setup + screenshot guide + analisis decay di
+[`docs/LK11_OBSERVABILITY_GUIDE.md`](docs/LK11_OBSERVABILITY_GUIDE.md).
 
 ---
 
