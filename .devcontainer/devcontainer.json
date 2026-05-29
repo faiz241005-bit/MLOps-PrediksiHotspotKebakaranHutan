@@ -46,18 +46,28 @@
           "editor.defaultFormatter": "ms-python.black-formatter"
         },
         "jupyter.askForKernelRestart": false,
-        "terminal.integrated.defaultProfile.linux": "bash"
+        "terminal.integrated.defaultProfile.linux": "bash",
+
+        // ── PORTS CLEANUP ──
+        // Cegah VS Code auto-forward random high ports dari ekstensi internal.
+        // Hanya port di "forwardPorts" yang akan muncul di tab Ports.
+        "remote.autoForwardPorts": false
       }
     }
   },
 
   "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt && pre-commit install || true",
 
-  "forwardPorts": [5000, 8000, 8888],
+  // ── PORTS — hanya yang penting (LK09 + LK10 + LK11) ──
+  "forwardPorts": [3000, 5000, 8010, 8085, 8501, 9000, 9090],
   "portsAttributes": {
-    "5000": { "label": "MLflow Tracking UI", "onAutoForward": "notify" },
-    "8000": { "label": "FastAPI Inference", "onAutoForward": "notify" },
-    "8888": { "label": "Jupyter Notebook",   "onAutoForward": "ignore" }
+    "3000": { "label": "Grafana (LK11)",            "onAutoForward": "notify" },
+    "5000": { "label": "MLflow Tracking UI",        "onAutoForward": "silent" },
+    "8010": { "label": "mlflow-model-server (rep1)","onAutoForward": "silent" },
+    "8085": { "label": "cAdvisor (LK11)",           "onAutoForward": "silent" },
+    "8501": { "label": "Streamlit Dashboard",       "onAutoForward": "notify" },
+    "9000": { "label": "metrics-proxy (LK11)",      "onAutoForward": "silent" },
+    "9090": { "label": "Prometheus (LK11)",         "onAutoForward": "silent" }
   },
 
   "remoteEnv": {
