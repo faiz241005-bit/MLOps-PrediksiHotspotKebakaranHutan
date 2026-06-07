@@ -1,0 +1,204 @@
+# =============================================================================
+# FireGuard — Data Ingestion Pipeline (Opsi 2: ingestion terpisah dari CT)
+# =============================================================================
+# Tujuan:
+#   Tarik data MENTAH terbaru (NASA FIRMS + Open-Meteo) secara terjadwal,
+#   versi-kan dengan DVC, lalu push ke remote B2 dan commit balik pointer
+#   .dvc ke repo. Dengan begitu CT pipeline (ct_pipeline.yaml) cukup
+#   `dvc pull` untuk mendapat data terbaru tanpa menyentuh API eksternal.
+#
+# Alur:
+#   1. Checkout repo (butuh write — untuk commit balik *.dvc)
+#   2. Setup Python 3.11 + install dvc[s3]
+#   3. Fetch FIRMS + weather via src.data.bulk_fetch (rolling window)
+#   4. dvc add data/raw/firms data/raw/weather  -> update pointer .dvc
+#   5. dvc push ke B2 (kredensial least-exposure di step ini saja)
+#   6. Commit + push *.dvc kalau ada perubahan (skip kalau tidak ada data baru)
+#
+# Trigger CT TIDAK ikut terpicu: ct_pipeline.yaml hanya jalan via schedule/
+# workflow_dispatch/repository_dispatch, BUKAN on:push. Jadi tidak ada loop.
+# =============================================================================
+
+name: FireGuard Data Ingestion
+
+on:
+  # Harian 06:00 UTC — setelah update NRT VIIRS pagi (FIRMS update ~2x/hari)
+  schedule:
+    - cron: "0 6 * * *"
+
+  # Manual / backfill
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: "Jumlah hari ke belakang yang di-fetch (rolling window)"
+        required: false
+        default: "7"
+      provinces:
+        description: "Daftar provinsi atau 'all'"
+        required: false
+        default: "all"
+
+# Least privilege: hanya 'contents: write' karena step terakhir commit balik
+# file *.dvc. Tidak butuh izin lain.
+permissions:
+  contents: write
+
+concurrency:
+  # Cegah dua ingestion paralel menulis data/raw + push DVC bersamaan
+  # (race pada pointer .dvc dan remote B2).
+  group: data-ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Fetch + version raw data
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      # ----------------------------------------------------------------
+      # Step 1: Checkout (persist-credentials default true -> bisa git push)
+      # ----------------------------------------------------------------
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ----------------------------------------------------------------
+      # Step 2: Python setup
+      # ----------------------------------------------------------------
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/base.txt
+
+      # ----------------------------------------------------------------
+      # Step 3: Install deps (dvc[s3] WAJIB untuk remote S3-compatible B2)
+      # ----------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/base.txt
+          pip install "dvc[s3]==3.51.2"
+
+      # ----------------------------------------------------------------
+      # Step 4: Hitung rolling window tanggal (UTC)
+      # ----------------------------------------------------------------
+      - name: Compute date window
+        id: window
+        shell: bash
+        env:
+          # Input user lewat env (BUKAN inline ${{ }}) -> cegah script injection.
+          WINDOW_DAYS: ${{ inputs.window_days || '7' }}
+        run: |
+          set -euo pipefail
+          WINDOW="${WINDOW_DAYS}"
+          # Validasi: harus angka positif (cegah injeksi argumen)
+          if ! [[ "${WINDOW}" =~ ^[0-9]+$ ]] || [ "${WINDOW}" -lt 1 ]; then
+            echo "::error::window_days invalid: ${WINDOW}"
+            exit 1
+          fi
+          END="$(date -u +%Y-%m-%d)"
+          START="$(date -u -d "${WINDOW} days ago" +%Y-%m-%d)"
+          echo "start=${START}" >> "$GITHUB_OUTPUT"
+          echo "end=${END}"     >> "$GITHUB_OUTPUT"
+          echo "Window: ${START} .. ${END} (${WINDOW} hari)"
+
+      # ----------------------------------------------------------------
+      # Step 5: Fetch FIRMS + weather
+      # KEAMANAN: NASA_FIRMS_API_KEY hanya diekspos ke step ini, tidak di-echo.
+      # bulk_fetch sudah punya URL allow-list, path-traversal guard, retry,
+      # dan stream-write per chunk (hemat memori).
+      # ----------------------------------------------------------------
+      - name: Fetch raw data (FIRMS + weather)
+        id: fetch
+        shell: bash
+        env:
+          NASA_FIRMS_API_KEY: ${{ secrets.NASA_FIRMS_API_KEY }}
+          # Input user & output step lewat env -> cegah script injection.
+          PROVINCES: ${{ inputs.provinces || 'all' }}
+          START: ${{ steps.window.outputs.start }}
+          END: ${{ steps.window.outputs.end }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NASA_FIRMS_API_KEY:-}" ]; then
+            echo "::error::Secret NASA_FIRMS_API_KEY belum diset."
+            exit 1
+          fi
+          # Validasi tiap token provinsi (cegah injeksi argumen): hanya
+          # huruf/angka/underscore. 'all' juga lolos pola ini.
+          read -ra PROV_ARR <<< "${PROVINCES}"
+          for prov in "${PROV_ARR[@]}"; do
+            if ! [[ "${prov}" =~ ^[a-zA-Z0-9_]+$ ]]; then
+              echo "::error::Nama provinsi tidak valid: ${prov}"
+              exit 1
+            fi
+          done
+          python -m src.data.bulk_fetch \
+            --start-date "${START}" \
+            --end-date "${END}" \
+            --provinces "${PROV_ARR[@]}" \
+            --sources firms,weather
+
+      # ----------------------------------------------------------------
+      # Step 6: Version dengan DVC + push ke B2
+      # KEAMANAN: kredensial B2 hanya di step ini (least exposure), tidak di-echo.
+      # ----------------------------------------------------------------
+      - name: DVC add + push ke B2
+        id: dvcpush
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "::error::Secret B2 (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) belum diset."
+            exit 1
+          fi
+          dvc add data/raw/firms data/raw/weather
+          dvc push
+          # Tandai apakah pointer .dvc berubah (ada data baru) untuk Step 7.
+          if git diff --quiet -- data/raw/firms.dvc data/raw/weather.dvc; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Tidak ada perubahan pointer .dvc (tidak ada data baru)."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ----------------------------------------------------------------
+      # Step 7: Commit balik *.dvc (hanya kalau ada perubahan)
+      # [skip ci] di pesan commit untuk eksplisit; CT juga tidak on:push.
+      # ----------------------------------------------------------------
+      - name: Commit pointer .dvc terbaru
+        if: steps.dvcpush.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/raw/firms.dvc data/raw/weather.dvc
+          git commit -m "data: ingestion ${{ steps.window.outputs.start }}..${{ steps.window.outputs.end }} [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
+
+      # ----------------------------------------------------------------
+      # Step 8: Ringkasan
+      # ----------------------------------------------------------------
+      - name: Job summary
+        if: always()
+        shell: bash
+        env:
+          PROVINCES: ${{ inputs.provinces || 'all' }}
+        run: |
+          {
+            echo "## Data Ingestion Summary"
+            echo ""
+            echo "- **Window:** ${{ steps.window.outputs.start }} .. ${{ steps.window.outputs.end }}"
+            echo "- **Provinces:** ${PROVINCES}"
+            echo "- **Data baru di-commit:** ${{ steps.dvcpush.outputs.changed || 'n/a' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
