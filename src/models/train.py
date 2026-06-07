@@ -15,11 +15,6 @@ Run example:
     python -m src.models.train --algorithm regressor --learning-rate 0.05 --n-estimators 500
     python -m src.models.train --algorithm classifier --max-depth 6 --learning-rate 0.1
     python -m src.models.train --algorithm regressor --n-estimators 300 --max-depth 4
-
-Security & resource hygiene:
-    - Tidak ada credential di-log
-    - MLflow tracking URI dari env atau default lokal file://
-    - Tidak ada loop training yang menyimpan dataset di memory secara redundan
 """
 
 from __future__ import annotations

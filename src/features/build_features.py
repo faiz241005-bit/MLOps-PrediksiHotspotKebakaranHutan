@@ -15,10 +15,6 @@ Pipeline:
     Target label generation (regresi + klasifikasi)
         ↓
     data/features/training_dataset_*.parquet  (siap konsumsi train.py)
-
-Resource hygiene:
-    - pd.read_parquet/to_parquet mengelola FD internal
-    - Tidak ada global cache yang membesar
 """
 from __future__ import annotations
 
@@ -186,7 +182,9 @@ def _dsr_per_group(rain_flags: pd.Series) -> pd.Series:
     return pd.Series(result, index=rain_flags.index)
 
 
-def add_days_since_rain(df: pd.DataFrame, rain_threshold_mm: float = _RAIN_THRESHOLD_MM) -> pd.DataFrame:
+def add_days_since_rain(
+    df: pd.DataFrame, rain_threshold_mm: float = _RAIN_THRESHOLD_MM
+) -> pd.DataFrame:
     """
     Jumlah hari berturut-turut tanpa hujan signifikan.
 

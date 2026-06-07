@@ -19,19 +19,6 @@ Architecture:
         ├── Cek concurrency lock (max 1 retrain berjalan)
         ├── Spawn detached subprocess: auto_retrain.py
         └── Return 202 Accepted
-
-Security:
-    - Token auth via header X-Auth-Token (env WEBHOOK_TOKEN)
-    - Body size limit 1 MiB (cegah DoS)
-    - Concurrency lock (1 retrain at a time → cegah race condition di Registry)
-    - Subprocess pakai list-args (TIDAK shell=True)
-    - History ring buffer terbatas 50 entry → cegah memory leak
-    - Tidak forward arbitrary input ke shell command
-
-Memory leak prevention:
-    - History dibatasi 50 entry (collections.deque maxlen)
-    - Subprocess fire-and-forget; tidak hold reference
-    - Concurrency lock pakai asyncio.Lock (release otomatis di context manager)
 """
 from __future__ import annotations
 
@@ -68,7 +55,7 @@ logging.basicConfig(
 )
 LOG = logging.getLogger(__name__)
 
-# Ring buffer history — bounded, no memory leak
+# Ring buffer history — bounded (maxlen)
 HISTORY: deque = deque(maxlen=HISTORY_SIZE)
 
 # Concurrency lock — at most 1 retrain berjalan
@@ -96,7 +83,7 @@ app = FastAPI(
     title="FireGuard CT Webhook Receiver",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url=None,        # disable Swagger (security)
+    docs_url=None,        # Swagger UI dimatikan
     redoc_url=None,
     openapi_url=None,
 )
@@ -307,7 +294,7 @@ async def manual_trigger(
 
     reason = str(payload.get("reason", "manual_webhook"))[:200]
 
-    # Whitelist extra_args supaya cegah arbitrary CLI injection
+    # Whitelist extra_args yang diizinkan
     allowed_flags = {"--dry-run", "--skip-dvc"}
     extra_args_raw = payload.get("extra_args", [])
     extra_args = [a for a in extra_args_raw if a in allowed_flags]

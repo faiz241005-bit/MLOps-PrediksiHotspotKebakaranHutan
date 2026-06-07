@@ -46,7 +46,10 @@ def generate(
     for p_idx in range(min(n_provinces, len(_DEFAULT_PROVINCES))):
         province = _DEFAULT_PROVINCES[p_idx]
         # Setiap provinsi punya "fire risk baseline" sendiri (Riau & Kalteng lebih tinggi)
-        province_baseline = {"riau": 8, "kalteng": 10, "kalbar": 4, "sumsel": 6, "jambi": 5}[province]
+        province_baseline = {
+            "riau": 8, "kalteng": 10, "kalbar": 4,
+            "sumsel": 6, "jambi": 5,
+        }[province]
 
         for day_offset in range(n_days):
             date = pd.Timestamp(start_date) + pd.Timedelta(days=day_offset)

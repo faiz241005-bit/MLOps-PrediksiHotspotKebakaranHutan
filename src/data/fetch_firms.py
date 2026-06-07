@@ -4,18 +4,6 @@ NASA FIRMS Hotspot Fetcher — production-ready ingestion module.
 Tugas LK04: mengambil data hotspot satelit secara berkala dari NASA FIRMS
 REST API, simpan ke data/raw/firms/ dengan nama ber-timestamp (append-only,
 tidak overwrite data lama).
-
-Security checklist:
-    - API key dibaca dari ENV var, tidak pernah hard-coded.
-    - URL divalidasi terhadap allow-list (mencegah SSRF dari config corrupt).
-    - HTTP redirect dimatikan (allow_redirects=False).
-    - Path output divalidasi dengan resolve+prefix-check (cegah path traversal).
-    - Tidak ada print(api_key) atau logging key di error/log.
-
-Resource hygiene (mencegah memory & FD leak):
-    - HTTP session dibungkus context manager (auto-close).
-    - File CSV ditulis via context manager.
-    - Tidak ada global session yang tetap hidup antar call.
 """
 from __future__ import annotations
 
@@ -43,7 +31,7 @@ from tenacity import (
 
 LOG = logging.getLogger(__name__)
 
-# --- Security constants ------------------------------------------------------
+# --- Konstanta ---------------------------------------------------------------
 _ALLOWED_HOSTS = frozenset({"firms.modaps.eosdis.nasa.gov"})
 _DEFAULT_TIMEOUT_S = 30
 _MAX_RETRIES = 3

@@ -235,7 +235,7 @@ def summarize(results: list[Result], elapsed_s: float) -> None:
     preds = [r.prediction for r in succ if r.prediction is not None]
 
     print("\n" + "=" * 60)
-    print(f"  LOAD TEST SUMMARY")
+    print("  LOAD TEST SUMMARY")
     print("=" * 60)
     print(f"  Total requests        : {n}")
     print(f"  Successful (HTTP 200) : {len(succ)} ({100*len(succ)/n:.1f}%)")

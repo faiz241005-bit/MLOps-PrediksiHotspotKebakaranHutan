@@ -27,12 +27,6 @@ Env vars (optional override):
     MLFLOW_TRACKING_URI       default: http://localhost:5000
     FIREGUARD_MODEL_NAME      default: fireguard-regressor
     FIREGUARD_IMPROVEMENT_PCT default: 0.02 (= 2% improvement minimal)
-
-Security / robustness:
-    - Subprocess pakai list-args (TIDAK shell=True) → cegah injection
-    - Timeout untuk training (default 30 menit)
-    - Try/except per stage, fail-safe (tidak rollback Production saat error)
-    - Tidak menulis ke path arbitrary
 """
 from __future__ import annotations
 
@@ -231,7 +225,9 @@ def _find_latest_run_id(client: MlflowClient, exp_name: str = "Default") -> Opti
     return None
 
 
-def stage_evaluate_new(client: MlflowClient, new_run_id: Optional[str]) -> tuple[StageResult, Optional[float], Optional[str]]:
+def stage_evaluate_new(
+    client: MlflowClient, new_run_id: Optional[str]
+) -> tuple[StageResult, Optional[float], Optional[str]]:
     """Ambil metric RMSE dari run terakhir (atau dari run_id eksplisit)."""
     started = time.perf_counter()
     rid = new_run_id or _find_latest_run_id(client)
@@ -255,7 +251,9 @@ def stage_evaluate_new(client: MlflowClient, new_run_id: Optional[str]) -> tuple
                 None, rid)
 
 
-def stage_get_production(client: MlflowClient) -> tuple[StageResult, Optional[float], Optional[str], Optional[int]]:
+def stage_get_production(
+    client: MlflowClient,
+) -> tuple[StageResult, Optional[float], Optional[str], Optional[int]]:
     """Ambil RMSE & run_id dari current Production model."""
     started = time.perf_counter()
     try:

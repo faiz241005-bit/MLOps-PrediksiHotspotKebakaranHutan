@@ -32,11 +32,6 @@ Compare dengan custom FastAPI (LK09):
     POST /predict
     Body: {"hotspot_count": 1323, "frp_mean": 50.0, ...}
     Response: {"hotspot_count_tomorrow": 323, "risk_level": 2, ...}
-
-Security & memory:
-    - Tidak ada credential di-log
-    - API timeout 10 detik per request
-    - Stream-write per subprocess call (tidak hold output di RAM)
 """
 from __future__ import annotations
 
@@ -369,8 +364,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "today_count": r["today_count"],
                 "date_today": str(r["date_today"]),
                 "prediction_count": r["prediction"],
-                "risk_level": derive_risk_level(r["prediction"])[0] if r["prediction"] is not None else None,
-                "risk_label": derive_risk_level(r["prediction"])[1] if r["prediction"] is not None else None,
+                "risk_level": (
+                    derive_risk_level(r["prediction"])[0]
+                    if r["prediction"] is not None else None
+                ),
+                "risk_label": (
+                    derive_risk_level(r["prediction"])[1]
+                    if r["prediction"] is not None else None
+                ),
             } for prov, r in results.items()
         },
     }

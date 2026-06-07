@@ -17,11 +17,6 @@ Schema columns yang dipertahankan:
     satellite, instrument, confidence, version, bright_t31, frp, daynight, type
     (preprocess.py cuma butuh: latitude, longitude, acq_date, acq_time, frp,
      confidence, daynight, satellite — sisanya disimpan untuk audit)
-
-Security & memory:
-    - Path traversal guard untuk filename output
-    - Validate kolom required ada di input sebelum proses
-    - Stream-write per province; tidak hold seluruh dataset > 1x di memori
 """
 from __future__ import annotations
 
@@ -71,7 +66,7 @@ class ProvinceBox:
 
 
 def _safe_output_path(out_dir: Path, filename: str) -> Path:
-    """Path traversal guard."""
+    """Pastikan file output tetap berada di dalam out_dir."""
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     candidate = (out_dir / filename).resolve()

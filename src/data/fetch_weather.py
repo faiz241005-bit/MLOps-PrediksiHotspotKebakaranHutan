@@ -6,14 +6,7 @@ fitur untuk model FireGuard. Tidak butuh API key.
 
 Strategi koordinat:
     Open-Meteo butuh satu titik (lat, lon), bukan bbox. Kita pakai
-    CENTROID dari bbox provinsi sebagai approximation. Untuk produksi
-    yang lebih akurat, bisa di-extend ke multi-point sampling.
-
-Security & resource hygiene sama seperti fetch_firms.py:
-    - URL allow-list (cegah SSRF)
-    - Timeout + retry exponential backoff
-    - Session dengan context manager
-    - Path traversal guard
+    CENTROID dari bbox provinsi sebagai approximation.
 """
 from __future__ import annotations
 
@@ -120,7 +113,10 @@ def _http_get_json(url: str, timeout: int = _DEFAULT_TIMEOUT_S) -> dict:
 def _payload_to_dataframe(payload: dict, province_id: str) -> pd.DataFrame:
     daily = payload.get("daily")
     if not daily or "time" not in daily:
-        raise RuntimeError(f"Open-Meteo response malformed for {province_id}: missing 'daily.time'")
+        raise RuntimeError(
+            f"Open-Meteo response malformed for {province_id}: "
+            "missing 'daily.time'"
+        )
     df = pd.DataFrame(daily)
     df["province_id"] = province_id
     df["fetched_at_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")

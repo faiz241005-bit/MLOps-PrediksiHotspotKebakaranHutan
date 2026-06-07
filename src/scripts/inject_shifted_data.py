@@ -38,11 +38,6 @@ Setelah generate, jalankan untuk track via DVC:
     git add data/features/*.dvc
     git commit -m "data(lk12): inject <scenario> drift for CT demo"
     dvc push
-
-Security/robustness:
-    - Path validation: input file harus di bawah data/features/
-    - Numeric clamping: cegah nilai out-of-range (mis. negative humidity)
-    - Output filename deterministic — tidak overwrite input
 """
 from __future__ import annotations
 
@@ -185,7 +180,7 @@ def find_latest_features() -> Optional[Path]:
 
 
 def validate_input_path(path: Path) -> Path:
-    """Pastikan path di bawah FEATURES_DIR (security: prevent path traversal)."""
+    """Pastikan path tetap di bawah FEATURES_DIR."""
     resolved = path.resolve()
     if not str(resolved).startswith(str(FEATURES_DIR.resolve())):
         raise ValueError(

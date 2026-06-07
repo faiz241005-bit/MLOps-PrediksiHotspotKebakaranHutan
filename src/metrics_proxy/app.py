@@ -12,14 +12,6 @@ Tugas service ini:
        - mlflow_active_requests          (Gauge,     no label)
        - mlflow_upstream_errors_total    (Counter,   label: reason)
 
-Catatan keamanan & resource:
-  - Body size dibatasi MAX_BODY_BYTES (default 1 MiB) → mitigasi DoS.
-  - Upstream timeout ditetapkan via httpx.Timeout (no hanging request).
-  - httpx.AsyncClient direuse via lifespan agar koneksi tidak bocor
-    (NO per-request client allocation → mencegah memory leak).
-  - Label cardinality TERIKAT (endpoint ∈ {invocations, ping}; status ∈ kode
-    HTTP standar). Tidak ada label dinamis dari user input.
-
 Endpoint internal:
   POST /invocations   → forwarded
   GET  /ping          → forwarded
@@ -105,7 +97,7 @@ UPSTREAM_ERR = Counter(
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — async HTTP client lifecycle (CEGAH memory leak)
+# Lifespan — async HTTP client lifecycle
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -130,7 +122,7 @@ app = FastAPI(
     title="FireGuard Metrics Proxy",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url=None,        # disable Swagger UI di production (security)
+    docs_url=None,        # Swagger UI dimatikan di production
     redoc_url=None,
     openapi_url=None,
 )

@@ -14,7 +14,6 @@ Run via docker compose:
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 import pandas as pd
 import streamlit as st

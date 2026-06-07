@@ -6,13 +6,14 @@ Tugas LK07: kelola siklus hidup model dari eksperimen ke produksi.
 - Load model production untuk inferensi
 - Promote run terbaik ke registry
 
-Security: tidak ada credential di-log. MLflow tracking URI dari env atau default lokal.
-
 CLI examples:
     python -m src.models.registry list --model fireguard-regressor
-    python -m src.models.registry transition --model fireguard-regressor --version 1 --stage Staging
-    python -m src.models.registry promote-best --model fireguard-regressor --metric rmse --lower-better
-    python -m src.models.registry load --model fireguard-regressor --stage Production
+    python -m src.models.registry transition \
+        --model fireguard-regressor --version 1 --stage Staging
+    python -m src.models.registry promote-best \
+        --model fireguard-regressor --metric rmse --lower-better
+    python -m src.models.registry load \
+        --model fireguard-regressor --stage Production
 """
 from __future__ import annotations
 

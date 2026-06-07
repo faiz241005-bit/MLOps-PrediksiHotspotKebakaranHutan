@@ -73,7 +73,10 @@ def render_map(
 
     # Esri WorldImagery — satellite imagery dark + detail tinggi
     folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        tiles=(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/"
+            "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        ),
         attr="Tiles &copy; Esri",
         name="Satellite (Esri WorldImagery)",
         overlay=False,

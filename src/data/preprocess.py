@@ -10,10 +10,6 @@ Output schema (per baris = 1 deteksi FIRMS, di-enrich cuaca harian):
     province_id, acq_datetime_wib, latitude, longitude, frp, confidence,
     daynight, temperature_2m_max, temperature_2m_min, precipitation_sum,
     windspeed_10m_max, winddirection_10m_dominant, relative_humidity_2m_mean
-
-Resource hygiene:
-    - pd.read_csv pakai path-string (pandas mengelola FD internal)
-    - tidak ada global cache yang membesar lintas-call
 """
 from __future__ import annotations
 
@@ -107,7 +103,9 @@ def clean_firms(df: pd.DataFrame, tz_offset_hours: int = 7) -> pd.DataFrame:
     # acq_time format: HHMM integer (mis. 1418 = 14:18)
     df["acq_time_str"] = df["acq_time"].astype(str).str.zfill(4)
     df["acq_datetime_utc"] = pd.to_datetime(
-        df["acq_date"].astype(str) + " " + df["acq_time_str"].str[:2] + ":" + df["acq_time_str"].str[2:4],
+        df["acq_date"].astype(str) + " "
+        + df["acq_time_str"].str[:2] + ":"
+        + df["acq_time_str"].str[2:4],
         format="%Y-%m-%d %H:%M",
         errors="coerce",
         utc=True,
