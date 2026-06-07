@@ -150,8 +150,11 @@ def stage_train(dry_run: bool) -> StageResult:
     if dry_run:
         return StageResult("train", True, "dry-run skipped", 0.0)
 
+    # train.py wajib --algorithm. JANGAN pakai --register di sini karena
+    # auto_retrain.py akan handle register + transition setelah evaluasi.
     rc, out = run_subprocess(
-        [sys.executable, "-m", "src.models.train"],
+        [sys.executable, "-m", "src.models.train",
+         "--algorithm", "regressor"],
         cwd=REPO_ROOT,
         timeout=TRAIN_TIMEOUT_S,
     )
