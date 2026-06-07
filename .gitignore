@@ -8,7 +8,6 @@
 # --- Secrets & credentials (CRITICAL — jangan pernah dihapus) ----------------
 .env
 .env.*
-!.env.example
 secrets/
 *.key
 *.pem
@@ -51,32 +50,22 @@ env/
 ENV/
 .python-version
 
-# --- Testing & coverage ------------------------------------------------------
-.pytest_cache/
-pytest-cache-files-*/   # Variant pytest cache (non-standar dari beberapa runner)
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-coverage.xml
-*.cover
-.hypothesis/
-
-# --- Notebooks ---------------------------------------------------------------
-.ipynb_checkpoints/
-*-checkpoint.ipynb
-
 # --- IDE / Editor ------------------------------------------------------------
 .vscode/
-!.vscode/extensions.json
-!.vscode/settings.json.example
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
 Thumbs.db
+
+# --- Container bind-mount side effects ---------------------------------------
+# .config folder dibuat container webhook-receiver via bind mount /:/app
+.config/
+.cache/
+
+# --- Test artifacts (jaga-jaga kalau pytest dijalankan lagi) -----------------
+.pytest_cache/
 
 # --- DVC ---------------------------------------------------------------------
 # DVC tracks data lewat .dvc files; data binary tidak boleh masuk Git.

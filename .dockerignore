@@ -8,7 +8,6 @@
 .env.*
 *.pem
 *.key
-.secrets.baseline
 
 # Git metadata
 .git
@@ -20,9 +19,6 @@
 __pycache__
 *.py[cod]
 *.so
-.pytest_cache
-.mypy_cache
-.ruff_cache
 *.egg-info
 .eggs
 build
@@ -42,29 +38,21 @@ Thumbs.db
 # DVC & big data — TIDAK perlu masuk image (mount via volume kalau perlu)
 .dvc/cache
 .dvc/tmp
+dvc-storage
 data/raw
 data/processed
 data/features
 data/external
 mlruns
 mlartifacts
-models/saved
 *.parquet
 *.csv
 
-# Notebooks & docs (tidak dibutuhkan saat serve)
-notebooks
-docs
+# Docs (tidak dibutuhkan saat serve)
 *.md
 LICENSE
-LK0*.docx
-
-# Tests (tidak dibutuhkan di runtime image)
-tests
-pytest.ini
+LK*.docx
+LK*.pdf
 
 # Devcontainer
 .devcontainer
-
-# Pre-commit
-.pre-commit-config.yaml
