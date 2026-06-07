@@ -65,8 +65,8 @@ _ALLOWED_HOSTS = frozenset({
     "api.open-meteo.com",          # Forecast API (kalau perlu fallback)
     "archive-api.open-meteo.com",  # Archive API untuk historical
 })
-_DEFAULT_TIMEOUT_S = 30
-_MAX_RETRIES = 3
+_DEFAULT_TIMEOUT_S = 60   # archive endpoint mengagregasi data harian, kadang lambat
+_MAX_RETRIES = 4
 _USER_AGENT = "FireGuard/0.1 (+bulk-historical)"
 _FIRMS_MAX_DAYS_PER_CALL = 5   # NASA FIRMS Area API hard limit (per 2026: [1..5])
 
@@ -410,6 +410,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw-dir", type=Path, default=_PROJECT_ROOT / "data" / "raw")
     p.add_argument("--sleep-between-chunks", type=float, default=1.0,
                    help="Delay detik antar FIRMS chunk untuk hormati rate limit (default 1.0)")
+    p.add_argument("--max-failures", type=int, default=0,
+                   help="Jumlah kegagalan fetch yang ditoleransi sebelum exit "
+                        "non-zero (default 0 = ketat). Untuk ingestion terjadwal "
+                        "dengan rolling window, >0 menoleransi miss transient "
+                        "(API lambat); celah ditambal run berikutnya.")
     p.add_argument("--log-level", default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p
@@ -505,8 +510,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 LOG.exception("Weather %s exception: %s", prov_id, type(e).__name__)
                 n_fail += 1
 
-    LOG.info("Done: %d sukses, %d gagal", n_ok, n_fail)
-    return 0 if n_fail == 0 else 1
+    LOG.info("Done: %d sukses, %d gagal (toleransi max_failures=%d)",
+             n_ok, n_fail, args.max_failures)
+    if n_fail > args.max_failures:
+        LOG.error("Kegagalan (%d) melebihi toleransi (%d) -> exit non-zero.",
+                  n_fail, args.max_failures)
+        return 1
+    if n_fail > 0:
+        LOG.warning("Ada %d kegagalan transient tapi <= toleransi -> exit 0.",
+                    n_fail)
+    return 0
 
 
 if __name__ == "__main__":
