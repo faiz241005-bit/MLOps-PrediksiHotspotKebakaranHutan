@@ -380,8 +380,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
-          cpus: "1.0"
+          # ⚠️ Dinaikkan dari 1g → 2g karena import mlflow + pandas + lightgbm
+          # butuh ~800MB peak. 1g terlalu pas-pasan, sering OOM saat training.
+          memory: 2g
+          cpus: "1.5"
     security_opt:
       - no-new-privileges:true
 
