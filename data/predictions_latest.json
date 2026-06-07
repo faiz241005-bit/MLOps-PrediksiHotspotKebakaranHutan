@@ -1,0 +1,43 @@
+{
+  "executed_at": "2026-05-20T04:59:52.753283",
+  "api_url": "http://localhost:8010",
+  "endpoint": "/invocations",
+  "server_type": "MLflow native (LK10, replicas:3)",
+  "results": {
+    "jambi": {
+      "today_count": 5,
+      "date_today": "2026-05-14 00:00:00",
+      "prediction_count": 6.350422259776927,
+      "risk_level": 1,
+      "risk_label": "Waspada"
+    },
+    "kalbar": {
+      "today_count": 13,
+      "date_today": "2026-05-16 00:00:00",
+      "prediction_count": 6.570725760498059,
+      "risk_level": 1,
+      "risk_label": "Waspada"
+    },
+    "kalteng": {
+      "today_count": 15,
+      "date_today": "2026-05-15 00:00:00",
+      "prediction_count": 7.577834186770488,
+      "risk_level": 1,
+      "risk_label": "Waspada"
+    },
+    "riau": {
+      "today_count": 10,
+      "date_today": "2026-05-14 00:00:00",
+      "prediction_count": 5.915712259871123,
+      "risk_level": 1,
+      "risk_label": "Waspada"
+    },
+    "sumsel": {
+      "today_count": 17,
+      "date_today": "2026-05-14 00:00:00",
+      "prediction_count": 12.82053634466114,
+      "risk_level": 2,
+      "risk_label": "Bahaya"
+    }
+  }
+}

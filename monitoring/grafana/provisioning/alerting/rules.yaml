@@ -30,7 +30,7 @@ groups:
         data:
           - refId: A
             relativeTimeRange:
-              from: 600         # last 10 menit
+              from: 600
               to: 0
             datasourceUid: prometheus
             model:
@@ -52,7 +52,7 @@ groups:
             model:
               conditions:
                 - evaluator:
-                    params: [1.0]   # threshold 1.0 detik
+                    params: [1.0]
                     type: gt
                   operator: { type: and }
                   query: { params: [A] }
