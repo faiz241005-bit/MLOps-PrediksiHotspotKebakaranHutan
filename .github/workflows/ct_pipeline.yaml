@@ -95,6 +95,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          # Dependensi ada di requirements/ (bukan requirements.txt di root),
+          # jadi cache key harus diarahkan ke sana — kalau tidak, setup-python
+          # gagal "No file matched to **/requirements.txt or **/pyproject.toml".
+          cache-dependency-path: requirements/base.txt
 
       # ----------------------------------------------------------------
       # Step 3: Install deps
