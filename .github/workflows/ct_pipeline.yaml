@@ -104,19 +104,59 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements/base.txt
           # auto_retrain.py butuh mlflow + dvc (sudah ada di base.txt,
-          # tapi pastikan versi yang dipakai webhook-receiver konsisten)
-          pip install "mlflow==2.13.0" "dvc==3.51.2"
+          # tapi pastikan versi yang dipakai webhook-receiver konsisten).
+          # dvc[s3] WAJIB: remote 'b2' adalah S3-compatible (Backblaze B2),
+          # tanpa extra [s3] -> 'dvc pull' gagal "missing dependency dvc-s3".
+          pip install "mlflow==2.13.0" "dvc[s3]==3.51.2"
 
       # ----------------------------------------------------------------
-      # Step 4: DVC pull (opsional)
+      # Step 4: DVC pull dari Backblaze B2 (Opsi 1: pull asli + fallback sintetis)
       # ----------------------------------------------------------------
-      # Karena LK12 pakai DVC remote LOKAL (./dvc-storage/), CI tidak
-      # bisa pull dari sana — itu di-storage Codespace. Untuk CI run,
-      # kita harus skip DVC pull. Production setup: pakai S3/GCS remote.
-      - name: DVC pull (skipped in CI — local-remote LK12)
+      # Coba tarik data asli dari remote 'b2' (S3-compatible).
+      #   - Sukses                       -> data_source=real
+      #   - Gagal / secret belum diset   -> data_source=synthetic (job TIDAK merah)
+      #   - input skip_dvc=true          -> data_source=synthetic (paksa lewati)
+      # Output 'data_source' dipakai Step 6 untuk memutuskan --skip-dvc.
+      # KEAMANAN: kredensial hanya diberikan ke step INI lewat env (least
+      # exposure) dan TIDAK pernah di-echo. dvc tidak mencetak nilai key.
+      - name: DVC pull dari B2 (with synthetic fallback)
+        id: dvcpull
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SKIP_DVC_INPUT: ${{ inputs.skip_dvc || 'false' }}
         run: |
-          echo "::warning::DVC remote LK12 adalah local './dvc-storage'."
-          echo "Untuk CI, pakai S3/GCS remote. Skip dvc pull di workflow ini."
+          set -euo pipefail
+
+          announce() {
+            echo "=================================================="
+            echo " DATA SOURCE: $1"
+            echo "=================================================="
+          }
+
+          if [ "${SKIP_DVC_INPUT}" = "true" ]; then
+            echo "::warning::skip_dvc=true diminta -> lewati DVC pull."
+            echo "data_source=synthetic" >> "$GITHUB_OUTPUT"
+            announce "SYNTHETIC FALLBACK (skip_dvc=true)"
+            exit 0
+          fi
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "::warning::Secret B2 (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) belum diset."
+            echo "data_source=synthetic" >> "$GITHUB_OUTPUT"
+            announce "SYNTHETIC FALLBACK (no credentials)"
+            exit 0
+          fi
+
+          if dvc pull --verbose; then
+            echo "data_source=real" >> "$GITHUB_OUTPUT"
+            announce "REAL (Backblaze B2)"
+          else
+            echo "::warning::dvc pull gagal -> mundur ke synthetic fallback."
+            echo "data_source=synthetic" >> "$GITHUB_OUTPUT"
+            announce "SYNTHETIC FALLBACK (dvc pull failed)"
+          fi
 
       # ----------------------------------------------------------------
       # Step 5: Determine trigger reason
@@ -152,12 +192,21 @@ jobs:
           REASON: ${{ steps.reason.outputs.reason }}
           IMPROVEMENT_PCT: ${{ inputs.improvement_pct || '0.02' }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          DATA_SOURCE: ${{ steps.dvcpull.outputs.data_source }}
         run: |
           set -e
           mkdir -p ./ct-reports
 
           ARGS="--reason ${REASON} --improvement-pct ${IMPROVEMENT_PCT} \
-                --skip-dvc --report-json ./ct-reports/report.json"
+                --report-json ./ct-reports/report.json"
+
+          # Opsi 1: --skip-dvc dipakai HANYA kalau data asli tidak tersedia.
+          if [ "${DATA_SOURCE}" = "real" ]; then
+            echo "Data asli tersedia dari B2 -> latih dengan data nyata."
+          else
+            echo "Data asli tidak tersedia (DATA_SOURCE=${DATA_SOURCE:-unknown}) -> synthetic (--skip-dvc)."
+            ARGS="${ARGS} --skip-dvc"
+          fi
 
           if [ "${DRY_RUN}" = "true" ]; then
             ARGS="${ARGS} --dry-run"
