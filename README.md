@@ -26,32 +26,43 @@ Mengikuti konvensi *Cookiecutter Data Science* dengan adaptasi MLOps:
 
 ```
 MLOps-FireGuard/
-├── .devcontainer/
-│   └── devcontainer.json       # Config GitHub Codespaces (Python 3.11)
-├── .github/
-│   └── workflows/              # CI/CD: data_fetch, ct_train, ci_test, cd_deploy
-├── config/                     # params.yaml, paths.yaml (file *.example.yaml saja yang di-commit)
-├── data/
-│   ├── raw/                    # Data mentah dari API (DVC-tracked, gitignored)
-│   ├── processed/              # Data setelah cleaning (DVC-tracked)
-│   └── features/               # Feature-engineered data (DVC-tracked)
-├── docs/
-│   └── BRANCHING.md            # Strategi GitHub Flow + code-quality guidelines
-├── models/                     # Model artifacts (DVC-tracked, gitignored)
-├── notebooks/                  # EDA & eksperimen (01_initial_eda.ipynb, dst.)
+├── .devcontainer/              # Config GitHub Codespaces (Python 3.11)
+├── .github/workflows/          # CT pipeline (LK12)
+├── .dvc/                       # DVC config (remote = ./dvc-storage)
+├── config/                     # params.yaml — hyperparameter & paths
+├── data/                       # raw/, processed/, features/ (DVC-tracked, gitignored)
+├── docker/                     # Build files untuk semua service
+│   ├── mlflow.Dockerfile
+│   ├── dashboard.Dockerfile
+│   ├── metrics-proxy.Dockerfile
+│   └── webhook-receiver.Dockerfile
+├── dvc-storage/                # Local DVC remote (LK12, gitignored content)
+├── models/                     # current_production.json (model pointer)
+├── monitoring/                 # Prometheus + Grafana provisioning (LK11+LK12)
+│   ├── prometheus.yml
+│   └── grafana/
+│       ├── dashboards/
+│       └── provisioning/       # datasources, dashboards, alerting
+├── requirements/               # Pinned deps per kontainer
+│   ├── base.txt                # Main Python deps (DVC, MLflow, sklearn, dst.)
+│   ├── dashboard.txt           # Streamlit + Folium
+│   ├── metrics-proxy.txt       # FastAPI + Prometheus client
+│   └── webhook.txt             # FastAPI + ML training stack (LK12)
 ├── src/
-│   ├── data/                   # fetch_firms.py, fetch_weather.py, preprocess.py
+│   ├── data/                   # ingest_data.py, preprocess.py
 │   ├── features/               # build_features.py
-│   ├── models/                 # train.py, evaluate.py, predict.py
-│   └── monitoring/             # drift_detector.py, performance_monitor.py
-├── tests/                      # Unit & integration tests (pytest)
-├── .gitignore                  # Lengkap untuk Python + DVC + MLflow + secrets
+│   ├── models/                 # train.py, evaluate.py, predict.py, registry.py
+│   ├── dashboard/              # Streamlit Folium UI (LK11)
+│   ├── metrics_proxy/          # FastAPI sidecar /metrics (LK11)
+│   ├── webhook_receiver/       # FastAPI CT trigger receiver (LK12)
+│   └── scripts/                # auto_retrain.py, inject_shifted_data.py, load_test
+├── docker-compose.yaml         # 8-container orchestration
+├── .dockerignore  .dvcignore  .gitignore
 ├── LICENSE                     # MIT
-├── README.md                   # File ini
-└── requirements.txt            # Pinned dependencies
+└── README.md                   # File ini
 ```
 
-> **Catatan keamanan:** folder `data/`, `models/`, `mlruns/`, dan file `.env` **tidak masuk** Git — masing-masing di-track via DVC atau di-store di GitHub Secrets / runner environment.
+> **Catatan keamanan:** folder `data/`, `models/`, `mlruns/`, `dvc-storage/` content, dan file `.env` **tidak masuk** Git — masing-masing di-track via DVC atau di-store di GitHub Secrets / runner environment.
 
 ---
 
@@ -74,9 +85,10 @@ MLOps-FireGuard/
 ### 3.3 Set API Keys (Secrets)
 
 ```bash
-# Di Codespace (sekali saja)
-cp .env.example .env
-# Edit .env, isi NASA_FIRMS_API_KEY, dst.
+# Di Codespace (sekali saja) — buat file .env di root repo
+cat > .env <<EOF
+NASA_FIRMS_API_KEY=your_key_here
+EOF
 # .env sudah ada di .gitignore sehingga TIDAK akan ter-commit.
 ```
 
@@ -157,7 +169,6 @@ Bangun 27 fitur (rolling, lag, cyclical, days_since_rain) + 2 target
 > python -m src.features.build_features
 > ```
 
-Detail flag & troubleshooting di [`docs/LK04_RUN_GUIDE.md`](docs/LK04_RUN_GUIDE.md).
 
 ---
 
@@ -217,7 +228,6 @@ dvc data status                              # state lokal vs remote
 Setiap commit Git yang mengubah file `.dvc` = satu versi dataset. Bisa
 `git checkout <hash>` lalu `dvc checkout` untuk kembali ke state lama.
 
-Detail (cara setup remote cloud + recovery) di [`docs/LK05_DVC_GUIDE.md`](docs/LK05_DVC_GUIDE.md).
 
 ---
 
@@ -265,7 +275,6 @@ python -c "import mlflow; m=mlflow.pyfunc.load_model('models:/fireguard-regresso
 
 Trigger retrain otomatis (lihat section 5 — Continual Training Strategy). Setiap retrain yang lolos threshold akan auto-promote ke `Staging`. Promosi `Staging → Production` saat ini **manual** (best practice MLOps — butuh approval) lewat CLI `registry transition` atau workflow `workflow_dispatch`.
 
-Detail siklus hidup model di [`docs/LK07_REGISTRY_GUIDE.md`](docs/LK07_REGISTRY_GUIDE.md).
 
 ---
 
@@ -387,8 +396,6 @@ docker compose down                          # stop (volumes tetap)
 docker compose down -v                       # stop + hapus volumes (data hilang)
 ```
 
-Detail lengkap LK09 (network, volume, healthcheck) di [`docs/LK09_DOCKER_GUIDE.md`](docs/LK09_DOCKER_GUIDE.md).
-Detail LK10 (MLflow serving, replicas, scaling) di [`docs/LK10_SERVING_GUIDE.md`](docs/LK10_SERVING_GUIDE.md).
 
 ---
 
@@ -467,9 +474,6 @@ Dashboard ini memvisualisasikan **4 sinyal model decay** sekaligus:
    model bertambah, atau memory pressure).
 3. **Error rate creep** — 4xx muncul → schema mismatch dengan training data.
 4. **Memory leak** — RAM monoton naik tanpa decay → restart replica diperlukan.
-
-Detail lengkap setup + screenshot guide + analisis decay di
-[`docs/LK11_OBSERVABILITY_GUIDE.md`](docs/LK11_OBSERVABILITY_GUIDE.md).
 
 ---
 
@@ -602,8 +606,6 @@ dvc push     # akan re-push ke remote baru
 ---
 
 ## 4. Branching Strategy — GitHub Flow
-
-Detail lengkap di [`docs/BRANCHING.md`](docs/BRANCHING.md).
 
 Ringkasan:
 

@@ -49,7 +49,7 @@ services:
   mlflow-server:
     build:
       context: .
-      dockerfile: Dockerfile.mlflow
+      dockerfile: docker/mlflow.Dockerfile
     image: fireguard/mlflow-server:1.0
     container_name: fireguard-mlflow
     restart: unless-stopped
@@ -119,7 +119,7 @@ services:
   metrics-proxy:
     build:
       context: .
-      dockerfile: Dockerfile.metrics-proxy
+      dockerfile: docker/metrics-proxy.Dockerfile
     image: fireguard/metrics-proxy:1.0
     container_name: fireguard-metrics-proxy
     restart: unless-stopped
@@ -161,7 +161,7 @@ services:
   streamlit-dashboard:
     build:
       context: .
-      dockerfile: Dockerfile.dashboard
+      dockerfile: docker/dashboard.Dockerfile
     image: fireguard/streamlit-dashboard:1.0
     container_name: fireguard-dashboard
     restart: unless-stopped
@@ -339,7 +339,7 @@ services:
   webhook-receiver:
     build:
       context: .
-      dockerfile: Dockerfile.webhook-receiver
+      dockerfile: docker/webhook-receiver.Dockerfile
     image: fireguard/webhook-receiver:1.0
     container_name: fireguard-webhook-receiver
     restart: unless-stopped
