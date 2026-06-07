@@ -1,7 +1,15 @@
 [core]
     autostage = true
-    remote = local-remote
+    # Default remote = cloud B2 (LK12). local-remote tetap ada sebagai fallback.
+    remote = b2
 ['remote "local-remote"']
     # Pindah dari /tmp ke ./dvc-storage (persistent, in-repo, gitignored).
     # Path relatif dievaluasi terhadap repo root (lokasi .dvc/config).
     url = ../dvc-storage
+['remote "b2"']
+    # Cloud remote: Backblaze B2 (S3-compatible), private bucket.
+    # PENTING: access_key_id & secret_access_key TIDAK boleh ditaruh di file ini.
+    # Lokal  -> .dvc/config.local (gitignored)  via: dvc remote modify --local b2 ...
+    # CI     -> GitHub Secrets (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+    url = s3://fireguard-dvc/dvc
+    endpointurl = https://s3.us-east-005.backblazeb2.com
