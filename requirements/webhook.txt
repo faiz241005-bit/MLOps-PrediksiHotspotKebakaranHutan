@@ -9,11 +9,13 @@ uvicorn[standard]==0.30.6
 
 # --- ML training (match dengan requirements/base.txt) ---
 # Catatan: pyarrow harus <16 untuk kompatibilitas dengan mlflow 2.13.0.
+# scikit-learn pin ke 1.4.2 (bukan 1.5.0) — 1.5 bermasalah di slim-bookworm
+# environment dengan libgomp; silent crash saat import (verified 2026-06-07).
 mlflow==2.13.0
 pandas==2.2.2
 numpy==1.26.4
-scikit-learn==1.5.0
-lightgbm==4.4.0
+scikit-learn==1.4.2
+lightgbm==4.3.0
 pyarrow==15.0.2
 
 # --- DVC (untuk dvc pull saat retrain) ---
