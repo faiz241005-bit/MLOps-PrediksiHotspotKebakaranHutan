@@ -145,6 +145,51 @@ def stage_dvc_pull(skip: bool) -> StageResult:
     return StageResult("dvc_pull", True, f"warn rc={rc}", elapsed)
 
 
+def stage_prepare_features(synthetic: bool) -> StageResult:
+    """
+    Bangun data/features SEBELUM train.
+
+    - synthetic=True  → generate synthetic dataset (CI tanpa real data).
+    - synthetic=False → pipeline real: raw → processed (preprocess)
+                        → features (build_features).
+
+    Tanpa stage ini, train.py gagal dengan FileNotFoundError karena
+    data/features/training_dataset_*.parquet belum ada.
+
+    Catatan: ini terpisah dari --skip-dvc. --skip-dvc hanya melewati
+    dvc pull internal (mis. karena CI sudah pull duluan), sedangkan
+    synthetic menentukan SUMBER data feature.
+    """
+    started = time.perf_counter()
+
+    if synthetic:
+        rc, out = run_subprocess(
+            [sys.executable, "-m", "src.utils.synthetic_data"],
+            cwd=REPO_ROOT,
+            timeout=300,
+        )
+        elapsed = time.perf_counter() - started
+        if rc != 0:
+            return StageResult("prepare_features", False,
+                               f"synthetic gen failed rc={rc}\n{out[-800:]}",
+                               elapsed)
+        return StageResult("prepare_features", True, "synthetic ok", elapsed)
+
+    for mod in ("src.data.preprocess", "src.features.build_features"):
+        rc, out = run_subprocess(
+            [sys.executable, "-m", mod],
+            cwd=REPO_ROOT,
+            timeout=600,
+        )
+        if rc != 0:
+            return StageResult("prepare_features", False,
+                               f"{mod} failed rc={rc}\n{out[-800:]}",
+                               time.perf_counter() - started)
+    return StageResult("prepare_features", True,
+                       "raw->processed->features ok",
+                       time.perf_counter() - started)
+
+
 def stage_train(dry_run: bool) -> StageResult:
     started = time.perf_counter()
     if dry_run:
@@ -343,7 +388,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="FireGuard CT auto-retrain driver")
     p.add_argument("--reason", default="manual",
                    help="Trigger reason (logged ke tag MLflow run)")
-    p.add_argument("--skip-dvc", action="store_true", help="Skip dvc pull")
+    p.add_argument("--skip-dvc", action="store_true",
+                   help="Skip dvc pull internal (mis. CI sudah pull duluan)")
+    p.add_argument("--synthetic", action="store_true",
+                   help="Pakai synthetic data untuk feature (bukan real "
+                        "preprocess->build_features)")
     p.add_argument("--dry-run", action="store_true",
                    help="Skip training, hanya simulasi keputusan")
     p.add_argument("--tracking-uri", default=DEFAULT_TRACKING_URI,
@@ -382,6 +431,14 @@ def main() -> int:
     report.stages.append(asdict(s))
     if not s.ok:
         report.error = f"DVC pull failed: {s.detail}"
+        report.decision = "abort"
+        return _finish(report, args, client)
+
+    # Stage 1.5: Prepare features (raw->processed->features, atau synthetic)
+    s = stage_prepare_features(args.synthetic)
+    report.stages.append(asdict(s))
+    if not s.ok:
+        report.error = f"Prepare features failed: {s.detail}"
         report.decision = "abort"
         return _finish(report, args, client)
 

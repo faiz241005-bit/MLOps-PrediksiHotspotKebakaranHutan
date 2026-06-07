@@ -201,15 +201,19 @@ jobs:
           set -e
           mkdir -p ./ct-reports
 
+          # Step 4 SUDAH menangani dvc pull (real) / fallback (synthetic),
+          # jadi auto_retrain TIDAK perlu pull lagi -> selalu --skip-dvc.
+          # Ini menghilangkan 'dvc pull rc=255' kosmetik (step internal tanpa
+          # kredensial B2). Sumber data feature ditentukan terpisah lewat
+          # --synthetic.
           ARGS="--reason ${REASON} --improvement-pct ${IMPROVEMENT_PCT} \
-                --report-json ./ct-reports/report.json"
+                --skip-dvc --report-json ./ct-reports/report.json"
 
-          # Opsi 1: --skip-dvc dipakai HANYA kalau data asli tidak tersedia.
           if [ "${DATA_SOURCE}" = "real" ]; then
-            echo "Data asli tersedia dari B2 -> latih dengan data nyata."
+            echo "Data asli tersedia dari B2 -> latih dengan data nyata (preprocess->build_features)."
           else
-            echo "Data asli tidak tersedia (DATA_SOURCE=${DATA_SOURCE:-unknown}) -> synthetic (--skip-dvc)."
-            ARGS="${ARGS} --skip-dvc"
+            echo "Data asli tidak tersedia (DATA_SOURCE=${DATA_SOURCE:-unknown}) -> synthetic."
+            ARGS="${ARGS} --synthetic"
           fi
 
           if [ "${DRY_RUN}" = "true" ]; then
