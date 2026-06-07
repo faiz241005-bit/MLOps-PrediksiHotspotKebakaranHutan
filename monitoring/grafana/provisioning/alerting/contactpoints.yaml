@@ -1,0 +1,36 @@
+# =============================================================================
+# Grafana Contact Points — LK12 CT trigger
+# =============================================================================
+# Contact point "fireguard-ct-webhook" mengirim alert ke webhook-receiver
+# service di compose network. Receiver akan trigger auto_retrain.py.
+#
+# Auth pattern: token via query param ?token=...
+#   Grafana v11 contact point provisioning tidak support custom header
+#   dengan mudah. Token via URL query lebih portable & jelas untuk LK12.
+#   ⚠️ Default token "dev-secret-change-me" — ganti untuk production.
+# =============================================================================
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: fireguard-ct-webhook
+    receivers:
+      - uid: fireguard_ct_webhook
+        type: webhook
+        settings:
+          url: "http://webhook-receiver:9100/webhook/grafana?token=dev-secret-change-me"
+          httpMethod: POST
+        disableResolveMessage: false
+
+# Notification policy: route SEMUA alert dari grup "fireguard" ke webhook
+policies:
+  - orgId: 1
+    receiver: fireguard-ct-webhook
+    group_by:
+      - alertname
+    object_matchers:
+      - [team, =, fireguard]
+    group_wait: 30s         # batch alert dalam 30 detik
+    group_interval: 5m       # interval antar batch sama grup
+    repeat_interval: 1h      # ulangi notifikasi tiap 1 jam kalau masih firing

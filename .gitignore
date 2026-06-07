@@ -93,6 +93,10 @@ Thumbs.db
 .dvc/tmp
 .dvc/plots
 
+# DVC local remote storage (LK12 — persistent local store, bukan /tmp)
+/dvc-storage/*
+!/dvc-storage/.gitkeep
+
 # --- Models ------------------------------------------------------------------
 /models/*
 !/models/.gitkeep

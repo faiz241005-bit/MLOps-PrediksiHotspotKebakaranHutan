@@ -272,7 +272,7 @@ Detail siklus hidup model di [`docs/LK07_REGISTRY_GUIDE.md`](docs/LK07_REGISTRY_
 ## 3d. Cara Menjalankan dengan Docker Compose
 
 Stack penuh dapat dijalankan dengan **satu perintah** menggunakan Docker
-Compose. Saat semua service aktif, ada **7 container** (LK09 + LK10 + LK11):
+Compose. Saat semua service aktif, ada **8 container** (LK09 + LK10 + LK11 + LK12):
 
 | Service | Port | Replicas | Peran |
 |---|---|---|---|
@@ -281,8 +281,9 @@ Compose. Saat semua service aktif, ada **7 container** (LK09 + LK10 + LK11):
 | `streamlit-dashboard` | 8501 | 1 | Folium UI — call API via metrics-proxy |
 | `metrics-proxy` | 9000 | 1 | FastAPI sidecar → `/metrics` (LK11) |
 | `prometheus` | 9090 | 1 | TSDB scraper (LK11) |
-| `grafana` | 3000 | 1 | Dashboard UI (LK11) |
+| `grafana` | 3000 | 1 | Dashboard UI + Alerting (LK11+LK12) |
 | `cadvisor` | 8085 | 1 | Container resource exporter (LK11) |
+| `webhook-receiver` | 9100 | 1 | FastAPI → trigger auto_retrain.py (LK12) |
 
 ### 3d.1 Prasyarat
 
@@ -469,6 +470,134 @@ Dashboard ini memvisualisasikan **4 sinyal model decay** sekaligus:
 
 Detail lengkap setup + screenshot guide + analisis decay di
 [`docs/LK11_OBSERVABILITY_GUIDE.md`](docs/LK11_OBSERVABILITY_GUIDE.md).
+
+---
+
+## 3f. Continuous Training — Closed-Loop CT (LK12)
+
+Sistem CT menutup siklus MLOps: dashboard observability (LK11) → trigger
+retraining otomatis → evaluasi komparatif → promosi model ke Production.
+
+### 3f.1 Arsitektur Closed Loop
+
+```
+[Grafana Alert Rules]
+        │ webhook (POST + token)
+        ▼
+[webhook-receiver :9100]
+        │ subprocess
+        ▼
+[auto_retrain.py]
+   ├── 1. DVC pull data terbaru
+   ├── 2. python -m src.models.train
+   ├── 3. Get RMSE model baru (MLflow)
+   ├── 4. Get RMSE current Production
+   ├── 5. Compare: new < prod × 0.98 ?
+   └── 6. Promote / Keep-Staging
+
+[GitHub Actions cron Sunday] ──► same auto_retrain.py
+```
+
+### 3f.2 Tiga Skenario Trigger
+
+| # | Skenario | Trigger | Ambang Batas | Sustained |
+|---|---|---|---|---|
+| **A** | Performance-based (latency degradation) | Grafana Alert Rule | `histogram_quantile(0.95, mlflow_request_duration_seconds_bucket)` > **1.0 detik** | **5 menit** |
+| **B** | Data-based (prediction drift) | Grafana Alert Rule | Rasio p95 prediksi sekarang / p95 1 jam lalu > **1.5** (= naik 50%) | **10 menit** |
+| **C** | Schedule-based (cron weekly) | GitHub Actions | Setiap Minggu **00:00 UTC** | — |
+
+**Rasionalisasi ambang batas:**
+
+- **A: p95 > 1 detik** — model serving target SLA 500ms (sesuai LK01).
+  p95 > 1s sustained 5 menit = degradasi nyata, bukan spike sesaat.
+- **B: Rasio 1.5x** — variasi alami prediksi musiman ~20-30%. Threshold 1.5x
+  = pergeseran signifikan di luar variasi normal. Window 10 menit cegah
+  false positive dari fluktuasi sesaat.
+- **C: Weekly schedule** — frekuensi cukup untuk pickup data baru dari DVC,
+  tidak terlalu sering untuk hindari unnecessary compute cost.
+
+### 3f.3 Decision Logic — Promosi Model
+
+Setelah retraining, sistem membandingkan model baru vs Production:
+
+```python
+# new_rmse: RMSE model yang baru di-train
+# prod_rmse: RMSE current Production model (dari MLflow Registry)
+# improvement_pct: 0.02 (default = 2% improvement minimal)
+
+if new_rmse < prod_rmse * (1 - improvement_pct):
+    PROMOTE        # Transition new model → Production, archive old
+else:
+    KEEP_STAGING   # Register tapi tidak promote, log alasannya
+```
+
+**Threshold 2% dipilih** karena:
+- Cukup ketat untuk filter improvement marginal (noise dari random seed)
+- Cukup longgar untuk mengizinkan iterasi yang masuk akal
+- Bisa di-override via env `FIREGUARD_IMPROVEMENT_PCT`
+
+### 3f.4 Akses & Demo
+
+```bash
+# 1. Akses Grafana → lihat Alert Rules
+http://localhost:3000 → Alerting → Alert rules
+# Harusnya muncul: "Latency p99 > 1s (LK12 trigger A)"
+#                   "Prediction Drift > 50% (LK12 trigger B)"
+
+# 2. Cek webhook-receiver hidup
+curl http://localhost:9100/health
+
+# 3. Manual trigger CT (testing tanpa Grafana)
+curl -X POST "http://localhost:9100/webhook/manual?token=dev-secret-change-me" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "manual_demo", "extra_args": ["--dry-run"]}'
+
+# 4. Lihat history trigger
+curl http://localhost:9100/history | python3 -m json.tool
+
+# 5. Inject drift simulation
+python -m src.scripts.inject_shifted_data --scenario drought
+dvc add data/features/training_dataset_drought_*.parquet
+python -m src.scripts.auto_retrain --reason "drift_simulation:drought" --skip-dvc
+```
+
+### 3f.5 GitHub Actions (Skenario C)
+
+Workflow di [`.github/workflows/ct_pipeline.yaml`](.github/workflows/ct_pipeline.yaml).
+
+```bash
+# Manual trigger via GitHub CLI
+gh workflow run "FireGuard CT Pipeline" \
+  -f reason="manual_test" \
+  -f improvement_pct="0.02" \
+  -f skip_dvc=true
+
+# Cek run terakhir
+gh run list --workflow="FireGuard CT Pipeline" --limit 5
+```
+
+### 3f.6 Audit Trail
+
+Setiap CT run tag MLflow run baru dengan:
+- `ct.triggered_at` — timestamp ISO
+- `ct.reason` — alasan trigger (mis. `grafana_alert:Latency p99 > 1s`)
+- `ct.decision` — `promote` / `keep-staging` / `abort`
+- `ct.prev_prod_metric` — RMSE Production sebelumnya (untuk comparison)
+
+Filter di MLflow UI: `tags.ct.reason like 'grafana%'`.
+
+### 3f.7 DVC Local Storage
+
+LK12 pakai DVC remote lokal di `./dvc-storage/` (sebelumnya `/tmp/`).
+Lokasi ini gitignored tapi persistent — survive container restart.
+
+Untuk migrasi pertama kali (kalau ada data DVC di `/tmp`):
+
+```bash
+mkdir -p dvc-storage
+cp -r /tmp/fireguard-dvc-remote/* dvc-storage/ 2>/dev/null || true
+dvc push     # akan re-push ke remote baru
+```
 
 ---
 

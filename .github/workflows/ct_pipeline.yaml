@@ -1,0 +1,204 @@
+# =============================================================================
+# FireGuard LK12 — Continuous Training Pipeline
+# =============================================================================
+# 3 trigger:
+#   1. schedule       — cron Sunday 00:00 UTC (Skenario C — schedule-based)
+#   2. workflow_dispatch — manual trigger (untuk demo / emergency CT)
+#   3. repository_dispatch — external event trigger (untuk integrasi
+#                            dari webhook-receiver kalau dipakai lewat GH API)
+#
+# Workflow steps:
+#   1. Checkout code (Git LFS untuk model artifacts)
+#   2. Setup Python 3.11
+#   3. Install deps dari requirements.txt
+#   4. (Opsional) DVC pull data terbaru
+#   5. Spin up MLflow tracking server (jangka pendek, sqlite backend)
+#   6. Jalankan auto_retrain.py dengan reason yang sesuai
+#   7. Upload report JSON sebagai artifact
+#   8. Comment ke commit kalau dijalankan dari push
+#
+# Output:
+#   - Artifact "ct-report-<run>" berisi JSON keputusan retrain
+#   - Log step yang menunjukkan promote / keep-staging
+# =============================================================================
+
+name: FireGuard CT Pipeline
+
+on:
+  # Skenario C — schedule weekly
+  schedule:
+    - cron: "0 0 * * 0"        # Setiap Minggu 00:00 UTC
+
+  # Manual trigger via UI
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Alasan trigger CT"
+        required: true
+        default: "manual_workflow_dispatch"
+      improvement_pct:
+        description: "Min improvement (decimal, default 0.02 = 2%)"
+        required: false
+        default: "0.02"
+      skip_dvc:
+        description: "Skip DVC pull (kalau remote belum siap)"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry run (jangan jalankan training)"
+        required: false
+        type: boolean
+        default: false
+
+  # External trigger via GitHub API (POST /dispatches)
+  repository_dispatch:
+    types: [ct-trigger]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write    # untuk comment ke issue/PR kalau perlu
+  packages: read
+
+concurrency:
+  # Cegah dua CT berjalan paralel (race condition di Model Registry)
+  group: ct-pipeline
+  cancel-in-progress: false
+
+jobs:
+  continuous-training:
+    name: Run CT pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      MLFLOW_TRACKING_URI: "file:./mlruns"
+      FIREGUARD_MODEL_NAME: "fireguard-regressor"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      # ----------------------------------------------------------------
+      # Step 1: Checkout
+      # ----------------------------------------------------------------
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # full history (DVC butuh)
+          lfs: false
+
+      # ----------------------------------------------------------------
+      # Step 2: Python setup
+      # ----------------------------------------------------------------
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ----------------------------------------------------------------
+      # Step 3: Install deps
+      # ----------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # auto_retrain.py butuh mlflow + dvc (kemungkinan sudah ada
+          # di requirements.txt, tapi pastikan)
+          pip install "mlflow==2.13.0" "dvc==3.51.2"
+
+      # ----------------------------------------------------------------
+      # Step 4: DVC pull (opsional)
+      # ----------------------------------------------------------------
+      # Karena LK12 pakai DVC remote LOKAL (./dvc-storage/), CI tidak
+      # bisa pull dari sana — itu di-storage Codespace. Untuk CI run,
+      # kita harus skip DVC pull. Production setup: pakai S3/GCS remote.
+      - name: DVC pull (skipped in CI — local-remote LK12)
+        run: |
+          echo "::warning::DVC remote LK12 adalah local './dvc-storage'."
+          echo "Untuk CI, pakai S3/GCS remote. Skip dvc pull di workflow ini."
+
+      # ----------------------------------------------------------------
+      # Step 5: Determine trigger reason
+      # ----------------------------------------------------------------
+      - name: Determine reason
+        id: reason
+        shell: bash
+        run: |
+          case "${{ github.event_name }}" in
+            schedule)
+              REASON="schedule:sunday_weekly"
+              ;;
+            workflow_dispatch)
+              REASON="${{ inputs.reason }}"
+              ;;
+            repository_dispatch)
+              REASON="repository_dispatch:${{ github.event.action }}"
+              ;;
+            *)
+              REASON="unknown:${{ github.event_name }}"
+              ;;
+          esac
+          echo "reason=${REASON}" >> "$GITHUB_OUTPUT"
+          echo "Trigger reason: ${REASON}"
+
+      # ----------------------------------------------------------------
+      # Step 6: Run auto_retrain.py
+      # ----------------------------------------------------------------
+      - name: Run auto_retrain.py
+        id: retrain
+        shell: bash
+        env:
+          REASON: ${{ steps.reason.outputs.reason }}
+          IMPROVEMENT_PCT: ${{ inputs.improvement_pct || '0.02' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -e
+          mkdir -p ./ct-reports
+
+          ARGS="--reason ${REASON} --improvement-pct ${IMPROVEMENT_PCT} \
+                --skip-dvc --report-json ./ct-reports/report.json"
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            ARGS="${ARGS} --dry-run"
+          fi
+
+          echo "Running: python -m src.scripts.auto_retrain ${ARGS}"
+          python -m src.scripts.auto_retrain ${ARGS}
+
+      # ----------------------------------------------------------------
+      # Step 7: Upload report artifact
+      # ----------------------------------------------------------------
+      - name: Upload CT report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ct-report-${{ github.run_id }}
+          path: ct-reports/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ----------------------------------------------------------------
+      # Step 8: Job summary
+      # ----------------------------------------------------------------
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CT Pipeline Summary"
+            echo ""
+            echo "- **Trigger:** ${{ github.event_name }}"
+            echo "- **Reason:** ${{ steps.reason.outputs.reason }}"
+            echo "- **Run ID:** ${{ github.run_id }}"
+            echo ""
+            if [ -f ./ct-reports/report.json ]; then
+              echo "### Report"
+              echo ""
+              echo '```json'
+              cat ./ct-reports/report.json
+              echo '```'
+            else
+              echo "_No report generated._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

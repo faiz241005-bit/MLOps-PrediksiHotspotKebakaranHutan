@@ -1,0 +1,152 @@
+# =============================================================================
+# Grafana Alert Rules — LK12 CT triggers
+# =============================================================================
+# 3 skenario trigger sesuai instruksi LK12:
+#   A. Performance-based — latensi p99 > 1s sustained 5 menit
+#   B. Data-based        — sebaran prediksi shift > 50% vs baseline
+#   C. Schedule-based    — handled oleh GitHub Actions cron (.github/workflows/
+#                          ct_pipeline.yaml), TIDAK di Grafana karena Grafana
+#                          tidak ideal untuk cron schedule
+# =============================================================================
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: fireguard-ct-triggers
+    folder: FireGuard
+    interval: 1m              # evaluasi rule tiap 1 menit
+    rules:
+
+      # ===================================================================
+      # SKENARIO A — Latency Degradation
+      # ===================================================================
+      # Trigger: p99 latensi /invocations > 1.0 detik selama 5 menit.
+      # Mengindikasikan model decay (model lambat, perlu investigation).
+      # ===================================================================
+      - uid: fireguard_latency_p99
+        title: "Latency p99 > 1s (LK12 trigger A)"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600         # last 10 menit
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(mlflow_request_duration_seconds_bucket{endpoint="invocations"}[5m]))
+                  by (le)
+                )
+              instant: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [1.0]   # threshold 1.0 detik
+                    type: gt
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: classic_conditions
+        noDataState: OK
+        execErrState: OK
+        for: 5m                    # SUSTAINED 5 menit
+        annotations:
+          summary: "Latensi p95 /invocations > 1s selama 5 menit — possible model decay"
+          description: |
+            Latensi p95 model serving naik di atas 1 detik secara berkelanjutan.
+            Kemungkinan penyebab: model membesar setelah training,
+            memory pressure, atau dependency I/O melambat.
+            Trigger CT retrain — sistem akan evaluasi & promote jika model
+            baru lebih cepat & akurat.
+          ct_reason: "latency_p95_exceed_1s"
+        labels:
+          team: fireguard
+          severity: warning
+          ct_scenario: "A"
+        isPaused: false
+
+      # ===================================================================
+      # SKENARIO B — Data Drift Detection
+      # ===================================================================
+      # Trigger: p95 distribusi nilai prediksi shift > 50% dari baseline.
+      # Indikasi input data distribution berubah (musim, demografi, dll).
+      # ===================================================================
+      - uid: fireguard_prediction_drift
+        title: "Prediction Drift > 50% (LK12 trigger B)"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600         # last 10 menit
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              # Ratio: p95 current 5m vs p95 1h-old
+              expr: |
+                (histogram_quantile(0.95,
+                  sum(rate(mlflow_prediction_value_bucket[5m])) by (le)
+                )) /
+                clamp_min(
+                  histogram_quantile(0.95,
+                    sum(rate(mlflow_prediction_value_bucket[5m] offset 1h)) by (le)
+                  ), 0.1
+                )
+              instant: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [1.5]   # threshold ratio 1.5 = naik 50%
+                    type: gt
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: classic_conditions
+        noDataState: OK
+        execErrState: OK
+        for: 10m                   # SUSTAINED 10 menit
+        annotations:
+          summary: "Prediction p95 shift > 50% vs baseline 1 jam yang lalu"
+          description: |
+            Distribusi nilai prediksi model bergeser signifikan (p95 saat
+            ini > 1.5x p95 dari 1 jam yang lalu). Sinyal data drift:
+            karakteristik input data sudah berubah, kemungkinan musim atau
+            event di luar training distribution. Trigger CT retrain dengan
+            data terbaru.
+          ct_reason: "prediction_distribution_drift"
+        labels:
+          team: fireguard
+          severity: warning
+          ct_scenario: "B"
+        isPaused: false

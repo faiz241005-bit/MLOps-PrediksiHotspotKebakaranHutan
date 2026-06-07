@@ -1,14 +1,15 @@
 # =============================================================================
-# FireGuard — Docker Compose orchestration (LK09 + LK10 + LK11)
+# FireGuard — Docker Compose orchestration (LK09 + LK10 + LK11 + LK12)
 # =============================================================================
-# Service map (7 container saat replicas=3):
+# Service map (8 container saat replicas=3):
 #   1. mlflow-server         : MLflow Tracking + Model Registry (sqlite)
 #   2. mlflow-model-server   : MLflow native serving (REPLICATED x3, LK10)
 #   3. streamlit-dashboard   : Folium UI (call proxy, BUKAN langsung ke MLflow)
 #   4. metrics-proxy         : FastAPI sidecar → expose /metrics (LK11)
 #   5. prometheus            : scrape metrics-proxy + cadvisor (LK11)
-#   6. grafana               : dashboard visualization (LK11)
+#   6. grafana               : dashboard visualization + alerting (LK11+LK12)
 #   7. cadvisor              : container CPU/RAM exporter (LK11)
+#   8. webhook-receiver      : FastAPI → trigger auto_retrain.py (LK12)
 #
 # Network:
 #   fireguard-net (custom bridge) — service discovery via nama service
@@ -255,11 +256,16 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     volumes:
+      # provisioning/ termasuk datasources/, dashboards/, alerting/
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       prometheus:
+        condition: service_healthy
+      # Grafana wait webhook-receiver supaya contact point bisa langsung
+      # nge-test koneksi saat startup. Tidak wajib, tapi bagus untuk demo.
+      webhook-receiver:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
@@ -316,6 +322,66 @@ services:
           cpus: "0.5"
     # NOTE: cAdvisor butuh akses ke /proc dan /sys host → no-new-privileges
     # tetap aman karena dia tidak escalate, hanya read.
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # webhook-receiver — Grafana alert handler + CT trigger (LK12)
+  # ---------------------------------------------------------------------------
+  # Endpoint:
+  #   POST /webhook/grafana?token=...  → terima alert dari Grafana
+  #   POST /webhook/manual?token=...   → trigger manual untuk demo
+  #   GET  /health                      → status receiver + retrain busy
+  #   GET  /history                     → 50 trigger terakhir (in-memory)
+  #
+  # Mount workspace untuk akses code + data + DVC + auto_retrain.py.
+  # ---------------------------------------------------------------------------
+  webhook-receiver:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook-receiver
+    image: fireguard/webhook-receiver:1.0
+    container_name: fireguard-webhook-receiver
+    restart: unless-stopped
+    networks:
+      - fireguard-net
+    ports:
+      - "9100:9100"
+    environment:
+      # ⚠️ Default well-known untuk demo. Ganti di production!
+      WEBHOOK_TOKEN: "dev-secret-change-me"
+      MLFLOW_TRACKING_URI: "http://mlflow-server:5000"
+      FIREGUARD_REPO_ROOT: "/app"
+      FIREGUARD_MODEL_NAME: "fireguard-regressor"
+      FIREGUARD_IMPROVEMENT_PCT: "0.02"
+      FIREGUARD_TRAIN_TIMEOUT_S: "1800"
+      RETRAIN_DRY_RUN: "false"
+      # Default SKIP_DVC=true untuk demo Codespace
+      # (DVC remote local mungkin belum populated saat first run)
+      SKIP_DVC: "true"
+      MAX_BODY_BYTES: "1048576"
+      HISTORY_SIZE: "50"
+      LOG_LEVEL: "INFO"
+    volumes:
+      # Mount entire workspace — webhook needs access ke src/, data/, .dvc/
+      - ./:/app:rw
+      # /tmp untuk subprocess log (tmpfs, bounded)
+    tmpfs:
+      - /tmp:size=64m
+    depends_on:
+      mlflow-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
     security_opt:
       - no-new-privileges:true
 

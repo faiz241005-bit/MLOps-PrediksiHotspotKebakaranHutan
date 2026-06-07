@@ -2,4 +2,6 @@
     autostage = true
     remote = local-remote
 ['remote "local-remote"']
-    url = /tmp/fireguard-dvc-remote
+    # Pindah dari /tmp ke ./dvc-storage (persistent, in-repo, gitignored).
+    # Path relatif dievaluasi terhadap repo root (lokasi .dvc/config).
+    url = ../dvc-storage
