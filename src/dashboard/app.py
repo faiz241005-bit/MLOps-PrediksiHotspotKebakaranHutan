@@ -33,7 +33,8 @@ from src.dashboard.data_loader import (
 )
 from src.dashboard.map_renderer import (
     PROVINCE_DISPLAY,
-    render_map,
+    render_forecast_map,
+    render_hotspot_map,
 )
 
 LOG = logging.getLogger(__name__)
@@ -206,15 +207,40 @@ risk_forecast = st.session_state.get("risk_forecast", {})
 
 
 # ---------------------------------------------------------------------------
-# MAIN — Map
+# MAIN — Dua peta terpisah (tab) supaya tidak saling rusak saat rerun
 # ---------------------------------------------------------------------------
-st.subheader("🗺️ Peta Hotspot (Satellite View)")
+tab_forecast, tab_hotspot = st.tabs(
+    ["🔮 Prediksi Esok Hari", "🛰️ Range Hotspot"]
+)
 
-if filtered.empty:
-    st.info("Tidak ada hotspot di filter ini. Coba perlebar rentang tanggal.")
-else:
-    fmap = render_map(filtered, risk_forecast=risk_forecast)
-    st_folium(fmap, height=600, use_container_width=True, returned_objects=[])
+with tab_forecast:
+    st.caption("Kotak provinsi diwarnai sesuai prediksi risk besok; titik hotspot bisa di-toggle.")
+    fmap_forecast = render_forecast_map(
+        risk_forecast=risk_forecast,
+        hotspots_df=filtered,
+    )
+    # key stabil -> komponen tidak di-remount saat rerun (peta tidak blank/rusak)
+    st_folium(
+        fmap_forecast,
+        height=600,
+        use_container_width=True,
+        returned_objects=[],
+        key="map_forecast",
+    )
+
+with tab_hotspot:
+    st.caption("Titik merah = deteksi hotspot historis (hasil filter sidebar).")
+    if filtered.empty:
+        st.info("Tidak ada hotspot di filter ini. Coba perlebar rentang tanggal.")
+    else:
+        fmap_hotspot = render_hotspot_map(filtered)
+        st_folium(
+            fmap_hotspot,
+            height=600,
+            use_container_width=True,
+            returned_objects=[],
+            key="map_hotspot",
+        )
 
 
 # ---------------------------------------------------------------------------
