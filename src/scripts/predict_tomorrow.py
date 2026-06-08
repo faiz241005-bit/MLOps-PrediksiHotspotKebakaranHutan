@@ -33,6 +33,7 @@ Compare dengan custom FastAPI (LK09):
     Body: {"hotspot_count": 1323, "frp_mean": 50.0, ...}
     Response: {"hotspot_count_tomorrow": 323, "risk_level": 2, ...}
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,31 +53,51 @@ LOG = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 _PROVINCE_DISPLAY = {
-    "riau":    "Riau",
+    "riau": "Riau",
     "kalteng": "Kalimantan Tengah",
-    "kalbar":  "Kalimantan Barat",
-    "sumsel":  "Sumatera Selatan",
-    "jambi":   "Jambi",
+    "kalbar": "Kalimantan Barat",
+    "sumsel": "Sumatera Selatan",
+    "jambi": "Jambi",
 }
 
 # Features yang dikirim ke /invocations (urutan match dengan model signature)
 _FEATURE_COLUMNS = [
-    "hotspot_count", "frp_mean", "frp_max", "frp_sum",
-    "n_daytime", "n_nighttime", "n_confidence_high",
-    "temperature_2m_max", "temperature_2m_min", "precipitation_sum",
-    "windspeed_10m_max", "winddirection_10m_dominant",
+    "hotspot_count",
+    "frp_mean",
+    "frp_max",
+    "frp_sum",
+    "n_daytime",
+    "n_nighttime",
+    "n_confidence_high",
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "precipitation_sum",
+    "windspeed_10m_max",
+    "winddirection_10m_dominant",
     "relative_humidity_2m_mean",
-    "month", "day_of_year", "month_sin", "month_cos",
-    "hotspot_count_1d", "hotspot_count_3d", "hotspot_count_7d",
-    "frp_mean_1d", "frp_mean_3d", "frp_mean_7d",
-    "hotspot_count_lag_1d", "hotspot_count_lag_3d", "hotspot_count_lag_7d",
+    "month",
+    "day_of_year",
+    "month_sin",
+    "month_cos",
+    "hotspot_count_1d",
+    "hotspot_count_3d",
+    "hotspot_count_7d",
+    "frp_mean_1d",
+    "frp_mean_3d",
+    "frp_mean_7d",
+    "hotspot_count_lag_1d",
+    "hotspot_count_lag_3d",
+    "hotspot_count_lag_7d",
     "days_since_rain",
 ]
 
 # Kolom yang harus int (match dengan model signature)
 _INT32_COLS = {"month", "day_of_year"}
 _INT64_COLS = {
-    "hotspot_count", "n_daytime", "n_nighttime", "n_confidence_high",
+    "hotspot_count",
+    "n_daytime",
+    "n_nighttime",
+    "n_confidence_high",
     "days_since_rain",
 }
 
@@ -88,8 +109,11 @@ def _run_step(cmd: list[str], description: str) -> bool:
     LOG.info("▶ %s", description)
     try:
         result = subprocess.run(
-            cmd, cwd=_PROJECT_ROOT,
-            capture_output=True, text=True, timeout=600,
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         if result.returncode != 0:
             LOG.error("  ✗ FAILED")
@@ -115,11 +139,17 @@ def fetch_latest_data(days_back: int = 7) -> bool:
 
     return _run_step(
         [
-            sys.executable, "-m", "src.data.bulk_fetch",
-            "--start-date", start_date.strftime("%Y-%m-%d"),
-            "--end-date", end_date.strftime("%Y-%m-%d"),
-            "--provinces", "all",
-            "--sleep-between-chunks", "0.5",
+            sys.executable,
+            "-m",
+            "src.data.bulk_fetch",
+            "--start-date",
+            start_date.strftime("%Y-%m-%d"),
+            "--end-date",
+            end_date.strftime("%Y-%m-%d"),
+            "--provinces",
+            "all",
+            "--sleep-between-chunks",
+            "0.5",
         ],
         f"Fetch FIRMS + Weather ({days_back} hari)",
     )
@@ -144,11 +174,18 @@ def run_build_features() -> bool:
 # ---------------------------------------------------------------------------
 def load_latest_features() -> Optional[pd.DataFrame]:
     features_dir = _PROJECT_ROOT / "data" / "features"
-    files = sorted(features_dir.glob("training_dataset_*.parquet"))
+    # Hanya file produksi — exclude file injeksi drift demo (drought/shifted)
+    files = [
+        p
+        for p in features_dir.glob("training_dataset_*.parquet")
+        if "drought" not in p.name and "shift" not in p.name
+    ]
     if not files:
-        LOG.error("Tidak ada training_dataset_*.parquet di %s", features_dir)
+        LOG.error("Tidak ada training_dataset produksi di %s", features_dir)
         return None
-    latest = files[-1]
+    # Pilih file termuda berdasarkan mtime — BUKAN sorted()[-1] yang
+    # leksikografis ('drought' menyalip timestamp angka).
+    latest = max(files, key=lambda p: p.stat().st_mtime)
     LOG.info("Pakai features file: %s", latest.name)
     return pd.read_parquet(latest)
 
@@ -193,7 +230,9 @@ def features_to_mlflow_payload(row: pd.Series) -> dict[str, Any]:
     }
 
 
-def call_invocations(api_url: str, payload: dict[str, Any], timeout: int = 10) -> Optional[float]:
+def call_invocations(
+    api_url: str, payload: dict[str, Any], timeout: int = 10
+) -> Optional[float]:
     """
     POST /invocations ke MLflow native serving.
     Return prediction value (float) atau None kalau error.
@@ -266,9 +305,13 @@ def print_results(results: dict[str, dict]) -> None:
             print(f"{prov_name:<22} {today_count:>10} {'—':>12} {'❌ ERROR':<12}")
             continue
         risk_lvl, risk_label = derive_risk_level(pred)
-        risk_emoji = {"Aman": "🟢", "Waspada": "🟡", "Bahaya": "🔴"}.get(risk_label, "⚪")
-        print(f"{prov_name:<22} {today_count:>10} {pred:>12.1f} "
-              f"{risk_emoji} {risk_label:<10}")
+        risk_emoji = {"Aman": "🟢", "Waspada": "🟡", "Bahaya": "🔴"}.get(
+            risk_label, "⚪"
+        )
+        print(
+            f"{prov_name:<22} {today_count:>10} {pred:>12.1f} "
+            f"{risk_emoji} {risk_label:<10}"
+        )
         total_today += today_count
         total_tomorrow += pred
 
@@ -288,14 +331,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--api-url",
         default=os.getenv("FIREGUARD_API_URL", "http://localhost:8010"),
         help="MLflow model server URL (default replica 1: http://localhost:8010). "
-             "Try 8011 atau 8012 untuk demo load balancing antar replicas.",
+        "Try 8011 atau 8012 untuk demo load balancing antar replicas.",
     )
-    parser.add_argument("--skip-fetch", action="store_true",
-                        help="Skip data fetch — pakai existing data/features/")
-    parser.add_argument("--days-back", type=int, default=7,
-                        help="Berapa hari data ke belakang yang di-fetch (default 7)")
-    parser.add_argument("--log-level", default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--skip-fetch",
+        action="store_true",
+        help="Skip data fetch — pakai existing data/features/",
+    )
+    parser.add_argument(
+        "--days-back",
+        type=int,
+        default=7,
+        help="Berapa hari data ke belakang yang di-fetch (default 7)",
+    )
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -366,13 +417,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "prediction_count": r["prediction"],
                 "risk_level": (
                     derive_risk_level(r["prediction"])[0]
-                    if r["prediction"] is not None else None
+                    if r["prediction"] is not None
+                    else None
                 ),
                 "risk_label": (
                     derive_risk_level(r["prediction"])[1]
-                    if r["prediction"] is not None else None
+                    if r["prediction"] is not None
+                    else None
                 ),
-            } for prov, r in results.items()
+            }
+            for prov, r in results.items()
         },
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)
