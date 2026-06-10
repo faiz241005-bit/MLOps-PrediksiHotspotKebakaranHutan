@@ -1,6 +1,6 @@
 ## 1. Tujuan Proyek
 
-**FireGuard** adalah platform berbasis AI yang memprediksi jumlah dan tingkat risiko titik panas (hotspot) kebakaran hutan/lahan untuk **satu hari ke depan**, per provinsi di Indonesia.
+Prediksi Hotspot Kebakaran Hutan adalah platform berbasis AI yang memprediksi jumlah dan tingkat risiko titik panas (hotspot) kebakaran hutan/lahan untuk **satu hari ke depan**, per provinsi di Indonesia.
 
 Proyek ini diinisiasi sebagai tugas mata kuliah **MLOps** dengan fokus utama:
 
