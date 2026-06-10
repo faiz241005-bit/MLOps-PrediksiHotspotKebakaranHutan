@@ -1,0 +1,6 @@
+outs:
+- md5: f8d3fab6c45447a40ce482fda3876cbc.dir
+  size: 1269892
+  nfiles: 11
+  hash: md5
+  path: artifact-production-v2
