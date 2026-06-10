@@ -116,3 +116,4 @@ logs/
 $RECYCLE.BIN/
 ehthumbs.db
 secrets/
+/mlruns
