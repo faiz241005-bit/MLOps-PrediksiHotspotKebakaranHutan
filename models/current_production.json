@@ -1,6 +1,6 @@
 {
   "model_name": "fireguard-regressor",
-  "version": 1,
+  "version": 2,
   "run_id": "11cc4affd84247dab2397f13b704712d",
   "stage": "Production",
   "source": "file:///workspaces/MLOps-PrediksiHotspotKebakaranHutan/mlruns/578234836062910386/11cc4affd84247dab2397f13b704712d/artifacts/model"

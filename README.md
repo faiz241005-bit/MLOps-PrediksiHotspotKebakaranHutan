@@ -278,28 +278,46 @@ Status model produksi di-track di file [`models/current_production.json`](models
 ```json
 {
   "model_name": "fireguard-regressor",
-  "version": 1,
+  "version": 2,
   "stage": "Production",
   "run_id": "11cc4affd84247dab2397f13b704712d"
 }
 ```
+
+### Ringkasan Versi di Registry
+
+| Version | Tanggal | Stage |
+|---|---|---|
+| Version 9 | 2026-06-09 19:56:36 | Staging |
+| Version 8 | 2026-06-08 23:40:57 | Staging |
+| Version 7 | 2026-06-08 23:35:52 | Staging |
+| Version 6 | 2026-06-08 22:18:15 | Staging |
+| Version 5 | 2026-06-08 22:16:44 | Staging |
+| Version 4 | 2026-06-07 17:46:05 | Staging |
+| Version 3 | 2026-06-07 17:42:22 | Staging |
+| **Version 2** | **2026-05-16 16:19:28** | **Production** |
+| Version 1 | 2026-05-15 17:07:58 | Archived |
+
+> Total 9 versi terdaftar — hasil dari iterasi CT pipeline (Skenario A/B/C).
+> Version 3–9 di Staging menunggu evaluasi; promosi ke Production bersifat **manual** (best practice MLOps).
 
 ### Versi Aktif Saat Ini
 
 | Field | Nilai |
 |---|---|
 | **Registered model** | `fireguard-regressor` |
-| **Version** | `1` |
+| **Version** | `2` |
 | **Stage** | `Production` |
 | **Algoritma** | LightGBM Regressor |
 | **Target** | `hotspot_count_tomorrow` (prediksi jumlah hotspot besok) |
+| **Latest Staging** | Version 9 (2026-06-09) |
 
-### Alasan Versi Ini Aktif
+### Alasan Versi 2 Aktif
 
-1. **Lolos threshold LK01** — RMSE ≤ 12 hotspot, MAE ≤ 8 hotspot saat di-evaluate di test set out-of-time (April–Mei 2026 vs train Jan–Mar 2026).
-2. **Lolos CI/CD gate (LK08)** — workflow `mlops-automation.yaml` menjalankan `src/models/evaluate.py` dengan `--ci-mode` lenient untuk synthetic, dan threshold full untuk run dengan real data. Versi 1 lolos keduanya.
-3. **Promoted via registry CLI** — di-transition dari `Staging` → `Production` lewat `python -m src.models.registry transition --model fireguard-regressor --version 1 --stage Production`, dengan flag `--archive-existing` untuk auto-archive versi lama.
-4. **Reproducible** — `run_id` `11cc4af…` merujuk ke MLflow run yang menyimpan: hyperparameter, training data hash (DVC), feature importances, metric, dan artifact model. Bisa di-load lagi kapan saja dengan `mlflow.pyfunc.load_model("models:/fireguard-regressor/Production")`.
+1. **Lolos threshold LK01** — RMSE ≤ 12 hotspot, MAE ≤ 8 hotspot saat di-evaluate di test set out-of-time.
+2. **Lolos CI/CD gate (LK08)** — `src/models/evaluate.py` dengan threshold full untuk real data. Version 2 lolos keduanya; versi lebih baru (3–9) masih di Staging karena belum menunjukkan improvement ≥ 2% terhadap Production.
+3. **Promoted via auto_retrain.py** — di-transition dari `Staging` → `Production` secara otomatis saat `new_rmse < prod_rmse * 0.98`, dengan `archive_existing_versions=True` untuk auto-archive Version 1.
+4. **Reproducible** — `run_id` merujuk ke MLflow run yang menyimpan hyperparameter, training data hash (DVC), feature importances, metric, dan artifact model. Bisa di-load kapan saja dengan `mlflow.pyfunc.load_model("models:/fireguard-regressor/Production")`.
 
 ### Cara Cek dari Codespace
 
