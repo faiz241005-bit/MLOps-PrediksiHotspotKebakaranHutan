@@ -6,7 +6,7 @@ Proyek ini diinisiasi sebagai tugas mata kuliah **MLOps** dengan fokus utama:
 
 1. Membangun pipeline **production-oriented**, bukan eksperimen sekali pakai.
 2. Menggunakan **data streaming nyata** (NASA FIRMS update 2× sehari + cuaca per jam).
-3. Menerapkan **Continual Training (CT)** dengan empat trigger berbeda untuk menjaga relevansi model terhadap *seasonal concept drift* (musim kemarau ↔ musim hujan).
+3. Menerapkan **Continual Training (CT)** dengan tiga skenario trigger berbeda untuk menjaga relevansi model terhadap *seasonal concept drift* (musim kemarau ↔ musim hujan).
 4. Menggunakan tooling industri standar: **GitHub Codespaces, GitHub Actions, DVC, MLflow, Docker, FastAPI**.
 
 ### Target Pengguna
@@ -27,16 +27,17 @@ Mengikuti konvensi *Cookiecutter Data Science* dengan adaptasi MLOps:
 ```
 MLOps-FireGuard/
 ├── .devcontainer/              # Config GitHub Codespaces (Python 3.11)
-├── .github/workflows/          # CT pipeline (LK12)
-├── .dvc/                       # DVC config (remote = ./dvc-storage)
+├── .github/workflows/          # CT pipeline (ct_pipeline.yaml) + data ingestion
+├── .dvc/                       # DVC config (remote = b2 / Backblaze B2)
 ├── config/                     # params.yaml — hyperparameter & paths
 ├── data/                       # raw/, processed/, features/ (DVC-tracked, gitignored)
+│   └── predictions_latest.json # Output prediksi terbaru (per provinsi)
 ├── docker/                     # Build files untuk semua service
 │   ├── mlflow.Dockerfile
 │   ├── dashboard.Dockerfile
 │   ├── metrics-proxy.Dockerfile
 │   └── webhook-receiver.Dockerfile
-├── dvc-storage/                # Local DVC remote (LK12, gitignored content)
+├── dvc-storage/                # Local DVC remote fallback (gitignored content)
 ├── models/                     # current_production.json (model pointer)
 ├── monitoring/                 # Prometheus + Grafana provisioning (LK11+LK12)
 │   ├── prometheus.yml
@@ -49,13 +50,18 @@ MLOps-FireGuard/
 │   ├── metrics-proxy.txt       # FastAPI + Prometheus client
 │   └── webhook.txt             # FastAPI + ML training stack (LK12)
 ├── src/
-│   ├── data/                   # ingest_data.py, preprocess.py
+│   ├── data/                   # ingest_data.py, preprocess.py, bulk_fetch.py,
+│   │                           # fetch_firms.py, fetch_weather.py,
+│   │                           # split_archive_by_province.py
 │   ├── features/               # build_features.py
-│   ├── models/                 # train.py, evaluate.py, predict.py, registry.py
-│   ├── dashboard/              # Streamlit Folium UI (LK11)
+│   ├── models/                 # train.py, evaluate.py, registry.py
+│   ├── dashboard/              # Streamlit Folium UI (app.py, api_client.py,
+│   │                           # data_loader.py, map_renderer.py)
 │   ├── metrics_proxy/          # FastAPI sidecar /metrics (LK11)
 │   ├── webhook_receiver/       # FastAPI CT trigger receiver (LK12)
-│   └── scripts/                # auto_retrain.py, inject_shifted_data.py, load_test
+│   ├── scripts/                # auto_retrain.py, inject_shifted_data.py,
+│   │                           # load_test_lk11.py, predict_tomorrow.py
+│   └── utils/                  # synthetic_data.py (CI fallback)
 ├── docker-compose.yaml         # 8-container orchestration
 ├── .dockerignore  .dvcignore  .gitignore
 ├── LICENSE                     # MIT
@@ -78,7 +84,7 @@ MLOps-FireGuard/
 1. Klik tombol hijau **`<> Code`** di halaman repo GitHub → tab **Codespaces** → **Create codespace on main**.
 2. Tunggu 2–4 menit. Codespace akan:
    * Pull image `mcr.microsoft.com/devcontainers/python:3.11-bullseye`.
-   * Install dependencies dari `requirements.txt` via `postCreateCommand`.
+   * Install dependencies dari `requirements/base.txt` via `postCreateCommand`.
    * Install ekstensi VS Code (Python, Jupyter, DVC, GitHub Actions, dst).
 3. Setelah siap, terminal terbuka otomatis di dalam container.
 
@@ -94,8 +100,13 @@ EOF
 
 Untuk GitHub Actions, simpan kunci di **Repo Settings → Secrets and variables → Actions**:
 
-* `NASA_FIRMS_API_KEY`
-* `DVC_REMOTE_URL` (jika pakai S3/GDrive)
+| Secret | Keterangan |
+|---|---|
+| `NASA_FIRMS_API_KEY` | API key NASA FIRMS untuk fetch hotspot |
+| `AWS_ACCESS_KEY_ID` | Backblaze B2 key ID (S3-compatible, untuk DVC remote) |
+| `AWS_SECRET_ACCESS_KEY` | Backblaze B2 application key |
+
+> **Catatan:** `AWS_ACCESS_KEY_ID` dan `AWS_SECRET_ACCESS_KEY` di sini merujuk ke kredensial **Backblaze B2**, bukan AWS. B2 mendukung protokol S3-compatible sehingga DVC bisa menggunakannya langsung. Kalau secret belum diset, CT pipeline akan otomatis fallback ke **synthetic data**.
 
 ### 3.4 Verifikasi Setup
 
@@ -103,12 +114,13 @@ Untuk GitHub Actions, simpan kunci di **Repo Settings → Secrets and variables 
 python --version          # harus Python 3.11.x
 pip list | grep mlflow    # harus terinstal
 dvc --version             # harus terinstal
+dvc remote list           # harus muncul remote 'b2' dan 'local-remote'
 ```
 
 ### 3.5 Jalankan EDA
 
 ```bash
-jupyter lab               # buka notebooks/01_initial_eda.ipynb (akan ditambahkan di branch feat/initial-eda)
+jupyter lab               # buka notebooks/01_initial_eda.ipynb
 ```
 
 ### 3.6 Jalankan MLflow UI (lokal di Codespace)
@@ -144,7 +156,26 @@ Argumen yang berguna:
 Output: `data/raw/firms/{province}_*.csv` + `data/raw/weather/{province}_*.csv`,
 masing-masing dengan suffix timestamp UTC.
 
-### 3a.2 Preprocess — Cleaning + Join
+### 3a.2 Bulk Historical Fetch (untuk training data)
+
+Untuk menarik data historis rentang panjang (misal beberapa bulan), gunakan `bulk_fetch.py` yang mendukung chunking otomatis per 5 hari (limit NASA FIRMS):
+
+```bash
+python -m src.data.bulk_fetch \
+    --start-date 2026-03-16 --end-date 2026-05-14 \
+    --provinces all
+```
+
+> **Catatan:** NASA FIRMS NRT hanya menyimpan ~60 hari terakhir. Untuk data lebih lama, download manual dari [FIRMS Fire Archive](https://firms.modaps.eosdis.nasa.gov/download/) lalu gunakan `split_archive_by_province.py`.
+
+### 3a.3 Split Archive Download
+
+```bash
+# Setelah download CSV dari FIRMS UI ke data/raw/firms_archive/
+python -m src.data.split_archive_by_province
+```
+
+### 3a.4 Preprocess — Cleaning + Join
 
 ```bash
 python -m src.data.preprocess
@@ -153,7 +184,7 @@ python -m src.data.preprocess
 Menggabungkan hotspot detection dengan cuaca per provinsi & hari (WIB, UTC+7).
 Output: `data/processed/firms_weather_joined_*.parquet`.
 
-### 3a.3 Feature Engineering
+### 3a.5 Feature Engineering
 
 ```bash
 python -m src.features.build_features
@@ -169,13 +200,22 @@ Bangun 27 fitur (rolling, lag, cyclical, days_since_rain) + 2 target
 > python -m src.features.build_features
 > ```
 
+### 3a.6 Generate Synthetic Data (CI Fallback)
+
+Untuk testing pipeline tanpa data real (misal di CI tanpa akses NASA FIRMS):
+
+```bash
+python -m src.utils.synthetic_data
+# Output: data/features/training_dataset_*_UTC.parquet (5 provinsi × 60 hari)
+```
 
 ---
 
 ## 3b. Versioning Data dengan DVC
 
 Folder `data/` (`raw/`, `processed/`, `features/`) **tidak masuk Git** — dilacak
-oleh **DVC** (Data Version Control). Alur penambahan versi data:
+oleh **DVC** (Data Version Control). Remote default adalah **Backblaze B2** (`b2`),
+dengan `local-remote` (`./dvc-storage/`) sebagai fallback lokal.
 
 ### 3b.1 Tambah Versi Baru
 
@@ -197,14 +237,15 @@ git commit -m "data: bump FIRMS+weather snapshot $(date +%Y-%m-%d)"
 ### 3b.2 Push ke Remote DVC
 
 ```bash
-dvc push
+dvc push          # push ke remote aktif (default: b2 / Backblaze B2)
+dvc remote list   # tampilkan semua remote yang terdaftar
 ```
 
-DVC akan upload content yang berubah ke remote (lokal `/tmp/fireguard-dvc-remote`
-saat ini; production upgrade ke S3/R2/Filebase). Daftar remote tersedia:
+Kredensial B2 diambil dari environment variable atau `.dvc/config.local` (gitignored):
 
 ```bash
-dvc remote list
+dvc remote modify --local b2 access_key_id YOUR_B2_KEY_ID
+dvc remote modify --local b2 secret_access_key YOUR_B2_APP_KEY
 ```
 
 ### 3b.3 Pull di Mesin Lain
@@ -227,7 +268,6 @@ dvc data status                              # state lokal vs remote
 
 Setiap commit Git yang mengubah file `.dvc` = satu versi dataset. Bisa
 `git checkout <hash>` lalu `dvc checkout` untuk kembali ke state lama.
-
 
 ---
 
@@ -270,11 +310,6 @@ python -m src.models.registry list --model fireguard-regressor
 # Test load model production
 python -c "import mlflow; m=mlflow.pyfunc.load_model('models:/fireguard-regressor/Production'); print('OK:', m.metadata)"
 ```
-
-### Kapan Akan Ada Versi Baru?
-
-Trigger retrain otomatis (lihat section 5 — Continual Training Strategy). Setiap retrain yang lolos threshold akan auto-promote ke `Staging`. Promosi `Staging → Production` saat ini **manual** (best practice MLOps — butuh approval) lewat CLI `registry transition` atau workflow `workflow_dispatch`.
-
 
 ---
 
@@ -327,13 +362,19 @@ sleep 60   # tunggu semua replica healthy
 docker compose ps
 ```
 
-Output diharapkan (4 container total — 1 mlflow-server + 3 replicas):
+Output diharapkan (8 container total):
 ```
-NAME                                            IMAGE                                  STATUS
-fireguard-mlflow                                fireguard/mlflow-server:1.0            Up (healthy)
-mlops-fireguard-mlflow-model-server-1           fireguard/mlflow-model-server:1.0      Up (healthy)
-mlops-fireguard-mlflow-model-server-2           fireguard/mlflow-model-server:1.0      Up (healthy)
-mlops-fireguard-mlflow-model-server-3           fireguard/mlflow-model-server:1.0      Up (healthy)
+NAME                                            IMAGE                                   STATUS
+fireguard-mlflow                                fireguard/mlflow-server:1.0             Up (healthy)
+fireguard-dashboard                             fireguard/streamlit-dashboard:1.0       Up (healthy)
+fireguard-metrics-proxy                         fireguard/metrics-proxy:1.0             Up (healthy)
+fireguard-prometheus                            prom/prometheus:v2.54.1                 Up (healthy)
+fireguard-grafana                               grafana/grafana:11.2.0                  Up (healthy)
+fireguard-cadvisor                              gcr.io/cadvisor/cadvisor:v0.49.1        Up (healthy)
+fireguard-webhook-receiver                      fireguard/webhook-receiver:1.0          Up (healthy)
+mlops-fireguard-mlflow-model-server-1           fireguard/mlflow-model-server:1.0       Up (healthy)
+mlops-fireguard-mlflow-model-server-2           fireguard/mlflow-model-server:1.0       Up (healthy)
+mlops-fireguard-mlflow-model-server-3           fireguard/mlflow-model-server:1.0       Up (healthy)
 ```
 
 ### 3d.4 Akses Endpoint API
@@ -346,8 +387,8 @@ curl -X POST http://localhost:8010/invocations \
   -H "Content-Type: application/json" \
   -d '{
     "dataframe_split": {
-      "columns": ["hotspot_count", "frp_mean", ...],
-      "data": [[1323, 50.0, ...]]
+      "columns": ["hotspot_count", "frp_mean", "..."],
+      "data": [[1323, 50.0, "..."]]
     }
   }'
 
@@ -395,7 +436,6 @@ docker compose restart mlflow-model-server   # restart semua replicas
 docker compose down                          # stop (volumes tetap)
 docker compose down -v                       # stop + hapus volumes (data hilang)
 ```
-
 
 ---
 
@@ -468,10 +508,8 @@ python -m src.scripts.load_test_lk11 --requests 100 --scenario high
 
 Dashboard ini memvisualisasikan **4 sinyal model decay** sekaligus:
 
-1. **Data drift** — heatmap prediksi shift dari baseline → input distribution
-   berubah (musim, demografi, dll).
-2. **Latency degradation** — p99 naik bertahap → model semakin lambat (ukuran
-   model bertambah, atau memory pressure).
+1. **Data drift** — heatmap prediksi shift dari baseline → input distribution berubah.
+2. **Latency degradation** — p99 naik bertahap → model semakin lambat.
 3. **Error rate creep** — 4xx muncul → schema mismatch dengan training data.
 4. **Memory leak** — RAM monoton naik tanpa decay → restart replica diperlukan.
 
@@ -492,8 +530,8 @@ retraining otomatis → evaluasi komparatif → promosi model ke Production.
         │ subprocess
         ▼
 [auto_retrain.py]
-   ├── 1. DVC pull data terbaru
-   ├── 2. python -m src.models.train
+   ├── 1. DVC pull data terbaru (atau synthetic fallback)
+   ├── 2. Preprocess → build_features → python -m src.models.train
    ├── 3. Get RMSE model baru (MLflow)
    ├── 4. Get RMSE current Production
    ├── 5. Compare: new < prod × 0.98 ?
@@ -506,23 +544,17 @@ retraining otomatis → evaluasi komparatif → promosi model ke Production.
 
 | # | Skenario | Trigger | Ambang Batas | Sustained |
 |---|---|---|---|---|
-| **A** | Performance-based (latency degradation) | Grafana Alert Rule | `histogram_quantile(0.95, mlflow_request_duration_seconds_bucket)` > **1.0 detik** | **5 menit** |
+| **A** | Performance-based (latency degradation) | Grafana Alert Rule | `histogram_quantile(0.95, ...)` > **1.0 detik** | **5 menit** |
 | **B** | Data-based (prediction drift) | Grafana Alert Rule | Rasio p95 prediksi sekarang / p95 1 jam lalu > **1.5** (= naik 50%) | **10 menit** |
 | **C** | Schedule-based (cron weekly) | GitHub Actions | Setiap Minggu **00:00 UTC** | — |
 
 **Rasionalisasi ambang batas:**
 
-- **A: p95 > 1 detik** — model serving target SLA 500ms (sesuai LK01).
-  p95 > 1s sustained 5 menit = degradasi nyata, bukan spike sesaat.
-- **B: Rasio 1.5x** — variasi alami prediksi musiman ~20-30%. Threshold 1.5x
-  = pergeseran signifikan di luar variasi normal. Window 10 menit cegah
-  false positive dari fluktuasi sesaat.
-- **C: Weekly schedule** — frekuensi cukup untuk pickup data baru dari DVC,
-  tidak terlalu sering untuk hindari unnecessary compute cost.
+- **A: p95 > 1 detik** — model serving target SLA 500ms. p95 > 1s sustained 5 menit = degradasi nyata, bukan spike sesaat.
+- **B: Rasio 1.5x** — variasi alami prediksi musiman ~20-30%. Threshold 1.5x = pergeseran signifikan di luar variasi normal.
+- **C: Weekly schedule** — frekuensi cukup untuk pickup data baru dari DVC, tidak terlalu sering untuk hindari unnecessary compute cost.
 
 ### 3f.3 Decision Logic — Promosi Model
-
-Setelah retraining, sistem membandingkan model baru vs Production:
 
 ```python
 # new_rmse: RMSE model yang baru di-train
@@ -535,31 +567,25 @@ else:
     KEEP_STAGING   # Register tapi tidak promote, log alasannya
 ```
 
-**Threshold 2% dipilih** karena:
-- Cukup ketat untuk filter improvement marginal (noise dari random seed)
-- Cukup longgar untuk mengizinkan iterasi yang masuk akal
-- Bisa di-override via env `FIREGUARD_IMPROVEMENT_PCT`
+**Threshold 2% dipilih** karena cukup ketat untuk filter improvement marginal
+(noise dari random seed), namun cukup longgar untuk iterasi yang masuk akal.
+Bisa di-override via env `FIREGUARD_IMPROVEMENT_PCT`.
 
 ### 3f.4 Akses & Demo
 
 ```bash
-# 1. Akses Grafana → lihat Alert Rules
-http://localhost:3000 → Alerting → Alert rules
-# Harusnya muncul: "Latency p99 > 1s (LK12 trigger A)"
-#                   "Prediction Drift > 50% (LK12 trigger B)"
-
-# 2. Cek webhook-receiver hidup
+# 1. Cek webhook-receiver hidup
 curl http://localhost:9100/health
 
-# 3. Manual trigger CT (testing tanpa Grafana)
+# 2. Manual trigger CT (testing tanpa Grafana)
 curl -X POST "http://localhost:9100/webhook/manual?token=dev-secret-change-me" \
   -H "Content-Type: application/json" \
   -d '{"reason": "manual_demo", "extra_args": ["--dry-run"]}'
 
-# 4. Lihat history trigger
+# 3. Lihat history trigger
 curl http://localhost:9100/history | python3 -m json.tool
 
-# 5. Inject drift simulation
+# 4. Inject drift simulation
 python -m src.scripts.inject_shifted_data --scenario drought
 dvc add data/features/training_dataset_drought_*.parquet
 python -m src.scripts.auto_retrain --reason "drift_simulation:drought" --skip-dvc
@@ -592,16 +618,8 @@ Filter di MLflow UI: `tags.ct.reason like 'grafana%'`.
 
 ### 3f.7 DVC Local Storage
 
-LK12 pakai DVC remote lokal di `./dvc-storage/` (sebelumnya `/tmp/`).
+LK12 pakai DVC remote lokal di `./dvc-storage/` sebagai fallback.
 Lokasi ini gitignored tapi persistent — survive container restart.
-
-Untuk migrasi pertama kali (kalau ada data DVC di `/tmp`):
-
-```bash
-mkdir -p dvc-storage
-cp -r /tmp/fireguard-dvc-remote/* dvc-storage/ 2>/dev/null || true
-dvc push     # akan re-push ke remote baru
-```
 
 ---
 
@@ -620,14 +638,15 @@ Setiap perubahan masuk lewat **Pull Request** dengan minimal 1 self-review pada 
 
 ## 5. Continual Training Strategy
 
-Empat trigger retrain (lihat detail di LK01_FireGuard.docx):
+Tiga skenario trigger retrain (implementasi di `.github/workflows/ct_pipeline.yaml` dan `monitoring/grafana/provisioning/alerting/`):
 
-| Tipe | Mekanisme |
-|---|---|
-| **Seasonal CT** | Cron 1 April & 1 November setiap tahun |
-| **Performance CT** | RMSE rolling 7 hari naik > 20% dari baseline |
-| **Event-based CT** | > 500 hotspot/hari → retrain immediate |
-| **Manual CT** | `workflow_dispatch` di GitHub Actions |
+| Skenario | Mekanisme | Detail |
+|---|---|---|
+| **A — Performance CT** | Grafana alert → webhook | Latency p95 > 1s sustained 5 menit |
+| **B — Data Drift CT** | Grafana alert → webhook | Prediction p95 shift > 50% vs 1 jam lalu |
+| **C — Schedule CT** | GitHub Actions cron | Setiap Minggu 00:00 UTC |
+
+> Untuk detail threshold, decision logic, dan audit trail lihat **Section 3f**.
 
 ---
 
