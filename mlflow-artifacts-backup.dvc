@@ -1,0 +1,6 @@
+outs:
+- md5: af4f42be6f4eff08ef5033ea89127869.dir
+  size: 10727808
+  nfiles: 90
+  hash: md5
+  path: mlflow-artifacts-backup

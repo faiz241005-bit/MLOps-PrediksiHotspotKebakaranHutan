@@ -117,3 +117,5 @@ $RECYCLE.BIN/
 ehthumbs.db
 secrets/
 /mlruns
+/mlflow-backup.db
+/mlflow-artifacts-backup
